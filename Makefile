@@ -17,7 +17,7 @@ ruff-fix:
 lint: ruff-check
 format: ruff-format
 test:
-	pytest tests/test*
+	pytest tests/test*.py
 test-coverage:
 	python -m nose --with-coverage --cover-erase --cover-html-dir=./coverage-html --cover-html --cover-package=smda
 clean:

@@ -17,71 +17,41 @@ class PeFileLoader:
 
     @staticmethod
     def mapBinary(binary):
-        # This is a pretty rough implementation but does the job for now
-        mapped_binary = bytearray([])
-        pe_offset = PeFileLoader.getPeOffset(binary)
-        if pe_offset:
-            num_sections = 0
-            bitness = 0
-            section_infos = []
-            optional_header_size = 0xF8
-            if pe_offset and len(binary) >= pe_offset + 0x8:
-                num_sections = struct.unpack("H", binary[pe_offset + 0x6 : pe_offset + 0x8])[0]
-                bitness = PeFileLoader.getBitness(binary)
-                if bitness == 64:
-                    optional_header_size = 0x108
-            if pe_offset and num_sections and len(binary) >= pe_offset + optional_header_size + num_sections * 0x28:
-                for section_index in range(num_sections):
-                    section_offset = section_index * 0x28
-                    slice_start = pe_offset + optional_header_size + section_offset + 0x8
-                    slice_end = pe_offset + optional_header_size + section_offset + 0x8 + 0x10
-                    virt_size, virt_offset, raw_size, raw_offset = struct.unpack("IIII", binary[slice_start:slice_end])
-                    section_info = {
-                        "section_index": section_index,
-                        "virt_size": virt_size,
-                        "virt_offset": virt_offset,
-                        "raw_size": raw_size,
-                        "raw_offset": raw_offset,
-                    }
-                    section_infos.append(section_info)
-            max_virt_section_offset = 0
-            min_raw_section_offset = 0xFFFFFFFF
-            if section_infos:
-                for section_info in section_infos:
-                    max_virt_section_offset = max(
-                        max_virt_section_offset,
-                        section_info["virt_size"] + section_info["virt_offset"],
-                    )
-                    max_virt_section_offset = max(
-                        max_virt_section_offset,
-                        section_info["raw_size"] + section_info["virt_offset"],
-                    )
-                    if section_info["raw_offset"] > 0x200:
-                        min_raw_section_offset = min(min_raw_section_offset, section_info["raw_offset"])
-            # support up to 100MB for now.
-            if max_virt_section_offset and max_virt_section_offset < 100 * 1024 * 1024:
-                mapped_binary = bytearray([0] * max_virt_section_offset)
-                mapped_binary[0:min_raw_section_offset] = binary[0:min_raw_section_offset]
-            for section_info in section_infos:
-                mapped_from = section_info["virt_offset"]
-                mapped_to = section_info["virt_offset"] + section_info["raw_size"]
-                mapped_binary[mapped_from:mapped_to] = binary[
-                    section_info["raw_offset"] : section_info["raw_offset"] + section_info["raw_size"]
-                ]
-                LOG.debug(
-                    "Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)",
-                    section_info["section_index"],
-                    section_info["raw_offset"],
-                    section_info["raw_size"],
-                    section_info["virt_offset"],
-                    section_info["virt_size"],
-                )
+        # lief is awesome and does all the heavy lifting.
+        pe = lief.parse(binary)
+        if pe is None:
+            return b""
+        # get maximum size of mapped sections to define size of the mapped_binary
+        max_offset = 0
+        for section in pe.sections:
+            max_offset = max(max_offset, section.virtual_address + section.virtual_size)
+        # support up to 100MB for now.
+        if max_offset > 100 * 1024 * 1024:
+            return b""
+        # create mapped binary
+        mapped_binary = bytearray(max_offset)
+        # copy PE header
+        if pe.optional_header.sizeof_headers > 0:
+            mapped_binary[:pe.optional_header.sizeof_headers] = binary[:pe.optional_header.sizeof_headers]
+        # copy sections
+        for section in pe.sections:
+            mapped_from = section.virtual_address
+            mapped_to = section.virtual_address + len(section.content)
+            mapped_binary[mapped_from:mapped_to] = section.content
             LOG.debug(
-                "Mapped binary of size %d bytes (%d sections) to memory view of size %d bytes",
-                len(binary),
-                num_sections,
-                len(mapped_binary),
+                "Mapping %s: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)",
+                section.name,
+                section.offset,
+                section.size,
+                section.virtual_address,
+                section.virtual_size,
             )
+        LOG.debug(
+            "Mapped binary of size %d bytes (%d sections) to memory view of size %d bytes",
+            len(binary),
+            len(pe.sections),
+            len(mapped_binary),
+        )
         return bytes(mapped_binary)
 
     @staticmethod

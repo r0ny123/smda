@@ -124,6 +124,24 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         komplex_unmapped_disassembly = disasm.disassembleUnmappedBuffer(komplex_binary)
         self.assertEqual(komplex_unmapped_disassembly.num_functions, 208)
 
+    def testPeParsingWithOverlappingSections(self):
+        disasm = Disassembler(config, backend="intel")
+        with open(os.path.join(config.PROJECT_ROOT, "tests", "test_pe.exe"), "rb") as f_binary:
+            binary = f_binary.read()
+        # run FileLoader and disassemble as file
+        loader = FileLoader("/", map_file=True)
+        loader._loadFile(binary)
+        file_content = loader.getData()
+        binary_info = BinaryInfo(file_content)
+        binary_info.raw_data = loader.getRawData()
+        binary_info.file_path = ""
+        binary_info.base_addr = loader.getBaseAddress()
+        binary_info.bitness = loader.getBitness()
+        binary_info.code_areas = loader.getCodeAreas()
+        binary_info.oep = binary_info.getOep()
+        disassembly = disasm._disassemble(binary_info)
+        self.assertEqual(disassembly.num_functions, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
