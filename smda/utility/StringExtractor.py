@@ -81,6 +81,7 @@ def detect_unicode_len(smda_report, offset, maxlen=None):
         and chr(char) in string.printable
         and second_char == 0
         and (maxlen is None or unicode_len < 2 * maxlen)
+        and rva + 3 < len(smda_report.buffer)
     ):
         unicode_len += 2
         rva += 2
