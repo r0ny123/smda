@@ -76,7 +76,12 @@ def detect_unicode_len(smda_report, offset, maxlen=None):
     rva = offset - smda_report.base_addr
     char = smda_report.buffer[rva]
     second_char = smda_report.buffer[rva + 1]
-    while char < 127 and chr(char) in string.printable and second_char == 0 and (maxlen is None or unicode_len < 2 * maxlen):
+    while (
+        char < 127
+        and chr(char) in string.printable
+        and second_char == 0
+        and (maxlen is None or unicode_len < 2 * maxlen)
+    ):
         unicode_len += 2
         rva += 2
         char = smda_report.buffer[rva]
