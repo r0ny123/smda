@@ -33,8 +33,9 @@ class ElfFileLoader:
         return data[:4] == b"\x7fELF"
 
     @staticmethod
-    def getBaseAddress(binary):
-        elffile = lief.parse(binary)
+    def getBaseAddress(binary, elffile=None):
+        if elffile is None:
+            elffile = lief.parse(binary)
         # Determine base address of binary
         #
         base_addr = 0
@@ -70,7 +71,7 @@ class ElfFileLoader:
         elffile = lief.parse(binary)
         if not elffile:
             return b""
-        base_addr = ElfFileLoader.getBaseAddress(binary)
+        base_addr = ElfFileLoader.getBaseAddress(binary, elffile=elffile)
 
         LOGGER.debug("ELF: base address: 0x%x", base_addr)
 
