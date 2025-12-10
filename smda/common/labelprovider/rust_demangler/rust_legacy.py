@@ -142,7 +142,7 @@ class LegacyDemangler:
         # But Ghidra is strict about the '17h'. The original code just checked for 'h'.
         # Let's support both but prioritize 17h which is standard for legacy Rust.
         if s.startswith("h") and len(s) > 1:
-             return all(i in string.hexdigits for i in s[1:])
+            return all(i in string.hexdigits for i in s[1:])
         return False
 
     def sanity_check(self, inpstr: str):

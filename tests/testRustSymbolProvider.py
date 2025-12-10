@@ -1,11 +1,12 @@
 import unittest
-import os
-from smda.common.labelprovider.rust_demangler import demangle
-from smda.common.labelprovider.ElfSymbolProvider import ElfSymbolProvider
-from smda.common.labelprovider.RustSymbolProvider import RustSymbolProvider
-from smda.common.labelprovider.PeSymbolProvider import PeSymbolProvider
-from smda.common.labelprovider.rust_demangler.utils import remove_bad_spaces
+
 from smda.common.BinaryInfo import BinaryInfo
+from smda.common.labelprovider.ElfSymbolProvider import ElfSymbolProvider
+from smda.common.labelprovider.PeSymbolProvider import PeSymbolProvider
+from smda.common.labelprovider.rust_demangler import demangle
+from smda.common.labelprovider.rust_demangler.utils import remove_bad_spaces
+from smda.common.labelprovider.RustSymbolProvider import RustSymbolProvider
+
 
 class MockSymbol:
     def __init__(self, name, value, is_function=True, demangled_name=None):
@@ -13,11 +14,12 @@ class MockSymbol:
         self.value = value
         self.is_function = is_function
         self.demangled_name = demangled_name
-        self.complex_type = type('obj', (object,), {'name': 'FUNCTION'})
+        self.complex_type = type("obj", (object,), {"name": "FUNCTION"})
+
 
 class MockLiefBinary:
     def __init__(self, symbols, exported_functions=None):
-        self.header = type('obj', (object,), {'entrypoint': 0})
+        self.header = type("obj", (object,), {"entrypoint": 0})
         self.exported_functions = exported_functions if exported_functions else []
         self.symtab_symbols = symbols
         self.dynamic_symbols = []
@@ -27,18 +29,20 @@ class MockLiefBinary:
         self.symbols = symbols
         self.imports = []
 
+
 class MockSection:
     def __init__(self, characteristics, virtual_address):
         self.characteristics = characteristics
         self.virtual_address = virtual_address
+
 
 class MockExport:
     def __init__(self, name, address):
         self.name = name
         self.address = address
 
-class TestRustSymbolProvider(unittest.TestCase):
 
+class TestRustSymbolProvider(unittest.TestCase):
     def test_direct_demangling_legacy(self):
         mangled = "_ZN3foo3barE"
         expected = "foo::bar"
@@ -126,7 +130,6 @@ class TestRustSymbolProvider(unittest.TestCase):
         # Ghidra says: "Hide the last segment, containing the hash, if not verbose."
         # The Python code seems to simply include it.
         # But if strict checking fails, it treats it as a normal segment?
-        pass
 
     def test_v0_recursion_limit(self):
         # Construct a deeply nested symbol to trigger recursion limit
@@ -163,5 +166,6 @@ class TestRustSymbolProvider(unittest.TestCase):
         # Check logic: surrounded by chars? 'r' and 'B'. Yes.
         self.assertEqual(remove_bad_spaces("Foo< Bar Baz >"), "Foo<Bar_Baz>")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
