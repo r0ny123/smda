@@ -475,7 +475,7 @@ class Printer:
 
     def invalid(self):
         self.out += "?"
-        print(self.out)
+        # print(self.out) # Consider removing or converting to logging
         raise UnableTov0Demangle("Error")
 
     def parser_mut(self):
