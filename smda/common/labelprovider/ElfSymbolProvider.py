@@ -5,6 +5,7 @@ import logging
 import lief
 
 from .AbstractLabelProvider import AbstractLabelProvider
+from .rust_demangler import demangle
 
 lief.logging.disable()
 LOGGER = logging.getLogger(__name__)
@@ -64,6 +65,15 @@ class ElfSymbolProvider(AbstractLabelProvider):
                     func_name = symbol.demangled_name
                 except AttributeError:
                     func_name = symbol.name
+                if not func_name:
+                    func_name = symbol.name
+                if func_name[:3] == "_ZN" or func_name[:2] == "_R":
+                    try:
+                        demangled_name = demangle(func_name)
+                        if demangled_name:
+                            func_name = demangled_name
+                    except:
+                        pass
                 function_symbols[symbol.value] = func_name
         return function_symbols
 
