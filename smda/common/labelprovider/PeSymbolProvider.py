@@ -82,13 +82,13 @@ class PeSymbolProvider(AbstractLabelProvider):
                     # UnicodeDecodeError: 'utf-32-le' codec can't decode bytes in position 0-3: code point not in range(0x110000)
                     function_name = symbol.name
                 if function_name and all(ord(c) in range(0x20, 0x7F) for c in function_name):
-                    if function_name[:3] == "_ZN" or function_name[:2] == "_R":
+                    if function_name.startswith(('_ZN', 'ZN', '__ZN', '_R', 'R', '__R')):
                         try:
                             demangled_name = demangle(function_name)
                             if demangled_name:
                                 function_name = demangled_name
-                        except:
-                            pass
+                        except Exception as e:
+                            LOGGER.debug("Failed to demangle Rust symbol %%s: %%s", function_name, e)
                     # for some reason, we need to add the section_offset of .text here
                     function_offset = code_base_address + symbol.value
                     if function_offset not in function_symbols:
