@@ -82,7 +82,8 @@ class RustSymbolProvider(AbstractLabelProvider):
 
         try:
             lief_binary = lief.parse(data)
-        except:
+        except Exception as e:
+            LOGGER.warning("Failed to parse ELF binary: %%s", e)
             return
 
         if not lief_binary:
