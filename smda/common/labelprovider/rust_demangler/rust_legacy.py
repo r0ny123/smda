@@ -158,8 +158,8 @@ class LegacyDemangler:
                 raise UnableToLegacyDemangle(inpstr)
 
             while inpstr[c].isdigit():
-                len = len * 10 + int(inpstr[c])
+                length = length * 10 + int(inpstr[c])
                 c += 1
 
-            c += len
+            c += length
             self.elements += 1
