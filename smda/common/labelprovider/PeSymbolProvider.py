@@ -59,7 +59,7 @@ class PeSymbolProvider(AbstractLabelProvider):
                         demangled_name = demangle(function_name)
                         if demangled_name:
                             function_name = demangled_name
-                    except:
+                    except Exception:
                         pass
                 function_symbols[lief_binary.imagebase + function.address] = function_name
         return function_symbols
@@ -87,7 +87,7 @@ class PeSymbolProvider(AbstractLabelProvider):
                             demangled_name = demangle(function_name)
                             if demangled_name:
                                 function_name = demangled_name
-                        except:
+                        except Exception:
                             pass
                     # for some reason, we need to add the section_offset of .text here
                     function_offset = code_base_address + symbol.value

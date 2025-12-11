@@ -76,7 +76,7 @@ class RustSymbolProvider(AbstractLabelProvider):
 
         try:
             lief_binary = lief.parse(data)
-        except:
+        except Exception:
             return
 
         if not lief_binary:
@@ -101,7 +101,7 @@ class RustSymbolProvider(AbstractLabelProvider):
 
         try:
             lief_binary = lief.parse(binary_info.file_path)
-        except:
+        except Exception:
             return
 
         if not lief_binary:
@@ -116,7 +116,7 @@ class RustSymbolProvider(AbstractLabelProvider):
                     if demangled:
                         demangled = remove_bad_spaces(demangled)
                         self._func_symbols[lief_binary.imagebase + function.address] = demangled
-            except:
+            except Exception:
                 pass
 
         # Parse PE symbols (COFF) if available and LIEF extracted them
@@ -140,7 +140,7 @@ class RustSymbolProvider(AbstractLabelProvider):
                                 function_offset = code_base_address + symbol.value
                                 if function_offset not in self._func_symbols:
                                     self._func_symbols[function_offset] = demangled
-                    except:
+                    except Exception:
                         pass
 
     def _parse_lief_symbols(self, symbols):
@@ -155,7 +155,7 @@ class RustSymbolProvider(AbstractLabelProvider):
                         if demangled:
                             demangled = remove_bad_spaces(demangled)
                             function_symbols[symbol.value] = demangled
-                    except:
+                    except Exception:
                         pass
         return function_symbols
 

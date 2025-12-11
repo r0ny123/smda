@@ -82,7 +82,7 @@ class PdbSymbolProvider(AbstractLabelProvider):
                         rust_demangled = demangle(sym.name)
                         if rust_demangled:
                             demangled_name = rust_demangled
-                    except:
+                    except Exception:
                         pass
                 if sym.symtype == 2:
                     # print("0x%x + 0x%x + 0x%x = 0x%x: %s || %s (type: %d)" % (self._base_addr, off, virt_base, function_address, sym.name, demangled_name, sym.symtype))

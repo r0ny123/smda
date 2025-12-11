@@ -72,7 +72,7 @@ class ElfSymbolProvider(AbstractLabelProvider):
                         demangled_name = demangle(func_name)
                         if demangled_name:
                             func_name = demangled_name
-                    except:
+                    except Exception:
                         pass
                 function_symbols[symbol.value] = func_name
         return function_symbols
