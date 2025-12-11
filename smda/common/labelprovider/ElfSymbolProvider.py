@@ -67,13 +67,13 @@ class ElfSymbolProvider(AbstractLabelProvider):
                     func_name = symbol.name
                 if not func_name:
                     func_name = symbol.name
-                if func_name[:3] == "_ZN" or func_name[:2] == "_R":
+                if func_name.startswith(('_ZN', 'ZN', '__ZN', '_R', 'R', '__R')):
                     try:
                         demangled_name = demangle(func_name)
                         if demangled_name:
                             func_name = demangled_name
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        LOGGER.debug("Failed to demangle Rust symbol %%s: %%s", func_name, e)
                 function_symbols[symbol.value] = func_name
         return function_symbols
 
