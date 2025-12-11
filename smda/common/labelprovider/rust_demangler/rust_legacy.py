@@ -153,7 +153,7 @@ class LegacyDemangler:
         self.elements = 0
         c = 0
         while inpstr[c] != "E":
-            len = 0
+            length = 0
             if not inpstr[c].isdigit():
                 raise UnableToLegacyDemangle(inpstr)
 
