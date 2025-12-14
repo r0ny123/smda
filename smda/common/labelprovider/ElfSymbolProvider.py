@@ -32,7 +32,6 @@ class ElfSymbolProvider(AbstractLabelProvider):
         if binary_info.file_path:
             with open(binary_info.file_path, "rb") as fin:
                 data = fin.read()
-            return
         elif binary_info.raw_data:
             data = binary_info.raw_data
         else:
@@ -63,6 +62,8 @@ class ElfSymbolProvider(AbstractLabelProvider):
                 try:
                     func_name = symbol.demangled_name
                 except AttributeError:
+                    func_name = symbol.name
+                if not func_name:
                     func_name = symbol.name
                 function_symbols[symbol.value] = func_name
         return function_symbols
