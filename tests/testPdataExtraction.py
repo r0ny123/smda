@@ -1,9 +1,10 @@
-
-import unittest
 import struct
-from smda.intel.FunctionCandidateManager import FunctionCandidateManager
+import unittest
+
 from smda.DisassemblyResult import DisassemblyResult
+from smda.intel.FunctionCandidateManager import FunctionCandidateManager
 from smda.SmdaConfig import SmdaConfig
+
 
 class MockBinaryInfo:
     def __init__(self, bitness, base_addr, binary):
@@ -17,17 +18,14 @@ class MockBinaryInfo:
         # .pdata at 0x1000, size 36 (3 entries)
         yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + 36
 
+
 class PdataExtractionTestSuite(unittest.TestCase):
     def test_pdata_candidates(self):
         config = SmdaConfig()
         fcm = FunctionCandidateManager(config)
 
         # Entry format: Start RVA, End RVA, Unwind RVA
-        entries = [
-            (0x2000, 0x2040, 0x3000),
-            (0x2050, 0x2090, 0x3010),
-            (0x2100, 0x2150, 0x3020)
-        ]
+        entries = [(0x2000, 0x2040, 0x3000), (0x2050, 0x2090, 0x3010), (0x2100, 0x2150, 0x3020)]
 
         pdata_bytes = b""
         for start, end, unwind in entries:
@@ -63,5 +61,6 @@ class PdataExtractionTestSuite(unittest.TestCase):
         self.assertIn(0x140000000 + 0x2050, candidates)
         self.assertIn(0x140000000 + 0x2100, candidates)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
