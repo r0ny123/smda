@@ -7,16 +7,18 @@ from smda.SmdaConfig import SmdaConfig
 
 
 class MockBinaryInfo:
-    def __init__(self, bitness, base_addr, binary):
+    def __init__(self, bitness, base_addr, binary, pdata_size=0):
         self.bitness = bitness
         self.base_addr = base_addr
         self.binary = binary
         self.code_areas = []
+        self.pdata_size = pdata_size
 
     def getSections(self):
         # yields name, start, end
-        # .pdata at 0x1000, size 36 (3 entries)
-        yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + 36
+        if self.pdata_size > 0:
+            # .pdata at 0x1000
+            yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
 
 
 class PdataExtractionTestSuite(unittest.TestCase):
