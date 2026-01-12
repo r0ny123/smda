@@ -635,18 +635,19 @@ class FunctionCandidateManager:
 
     def locateExceptionHandlerCandidates(self):
         # 64bit only - if we have a .pdata section describing exception handlers, we extract entries of guaranteed function starts from it.
-        # TODO 2020-10-29 continue here and extract function start candidates
         if self.disassembly.binary_info.bitness == 64:
             for section_info in self.disassembly.binary_info.getSections():
                 section_name, section_va_start, section_va_end = section_info
                 if section_name == ".pdata":
                     rva_start = section_va_start - self.disassembly.binary_info.base_addr
                     rva_end = section_va_end - self.disassembly.binary_info.base_addr
-                    for offset in range(rva_start, rva_end + 1, 12):
+                    # .pdata entries are 12 bytes long (3 DWORDs)
+                    for offset in range(rva_start, rva_end, 12):
                         packed_dword = self.disassembly.binary_info.binary[offset : offset + 4]
                         rva_function_candidate = None
                         if len(packed_dword) == 4:
                             rva_function_candidate = struct.unpack("I", packed_dword)[0]
                             self.addExceptionCandidate(self.disassembly.binary_info.base_addr + rva_function_candidate)
+                        # if we hit a zero entry, we assume we reached the end of the table
                         if not rva_function_candidate:
                             break
