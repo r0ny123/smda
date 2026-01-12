@@ -7,7 +7,7 @@ from smda.SmdaConfig import SmdaConfig
 
 
 class MockBinaryInfo:
-    def __init__(self, bitness, base_addr, binary, pdata_size=0):
+    def __init__(self, bitness, base_addr, binary, pdata_size=36):
         self.bitness = bitness
         self.base_addr = base_addr
         self.binary = binary
@@ -16,9 +16,8 @@ class MockBinaryInfo:
 
     def getSections(self):
         # yields name, start, end
-        if self.pdata_size > 0:
-            # .pdata at 0x1000
-            yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
+        # .pdata at 0x1000
+        yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
 
 
 class PdataExtractionTestSuite(unittest.TestCase):
@@ -44,17 +43,6 @@ class PdataExtractionTestSuite(unittest.TestCase):
         disasm = DisassemblyResult()
         disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary))
 
-        # Mock code_areas in binary info so passesCodeFilter works
-        # If code_areas is empty, it returns True (see FunctionCandidateManager.py)
-
-        # We need to mock LanguageAnalyzer to avoid it running on empty/random binary and potentially crashing or taking time
-        # But FunctionCandidateManager instantiates it inside init().
-        # We can mock it by assigning to fcm.lang_analyzer *after* init? No init calls identify().
-        # We can subclass FunctionCandidateManager and override init, or just mock disassembly.binary_info.binary to be safe for LanguageAnalyzer.
-        # LanguageAnalyzer checks bytes.
-
-        # Let's try running it. If LanguageAnalyzer crashes, we will see.
-
         fcm.init(disasm)
 
         candidates = fcm.candidates
@@ -62,6 +50,58 @@ class PdataExtractionTestSuite(unittest.TestCase):
         self.assertIn(0x140000000 + 0x2000, candidates)
         self.assertIn(0x140000000 + 0x2050, candidates)
         self.assertIn(0x140000000 + 0x2100, candidates)
+
+    def test_pdata_with_zero_entry(self):
+        config = SmdaConfig()
+        fcm = FunctionCandidateManager(config)
+
+        entries = [
+            (0x2000, 0x2040, 0x3000),
+            (0, 0, 0),  # Zero entry
+            (0x2100, 0x2150, 0x3020),
+        ]
+
+        pdata_bytes = b""
+        for start, end, unwind in entries:
+            pdata_bytes += struct.pack("III", start, end, unwind)
+
+        binary = bytearray(0x4000)
+        binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
+
+        disasm = DisassemblyResult()
+        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
+
+        fcm.init(disasm)
+
+        candidates = fcm.candidates
+        self.assertIn(0x140000000 + 0x2000, candidates)
+        self.assertNotIn(0x140000000 + 0x2100, candidates)
+        self.assertEqual(len(candidates), 1)
+
+    def test_pdata_misaligned_size(self):
+        config = SmdaConfig()
+        fcm = FunctionCandidateManager(config)
+
+        entries = [(0x2000, 0x2040, 0x3000)]
+
+        pdata_bytes = b""
+        for start, end, unwind in entries:
+            pdata_bytes += struct.pack("III", start, end, unwind)
+
+        # Add some extra bytes to make it misaligned (not multiple of 12)
+        pdata_bytes += b"\x90\x90"
+
+        binary = bytearray(0x4000)
+        binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
+
+        disasm = DisassemblyResult()
+        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
+
+        fcm.init(disasm)
+
+        candidates = fcm.candidates
+        self.assertIn(0x140000000 + 0x2000, candidates)
+        self.assertEqual(len(candidates), 1)
 
 
 if __name__ == "__main__":
