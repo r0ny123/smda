@@ -7,7 +7,7 @@ from smda.SmdaConfig import SmdaConfig
 
 
 class MockBinaryInfo:
-    def __init__(self, bitness, base_addr, binary, pdata_size=36):
+    def __init__(self, bitness, base_addr, binary, pdata_size=0):
         self.bitness = bitness
         self.base_addr = base_addr
         self.binary = binary
@@ -16,8 +16,9 @@ class MockBinaryInfo:
 
     def getSections(self):
         # yields name, start, end
-        # .pdata at 0x1000
-        yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
+        if self.pdata_size > 0:
+            # .pdata at 0x1000
+            yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
 
 
 class PdataExtractionTestSuite(unittest.TestCase):
@@ -41,7 +42,7 @@ class PdataExtractionTestSuite(unittest.TestCase):
 
         # Initialize Mock Disassembly and BinaryInfo
         disasm = DisassemblyResult()
-        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary))
+        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
 
         fcm.init(disasm)
 
@@ -75,8 +76,9 @@ class PdataExtractionTestSuite(unittest.TestCase):
 
         candidates = fcm.candidates
         self.assertIn(0x140000000 + 0x2000, candidates)
-        self.assertNotIn(0x140000000 + 0x2100, candidates)
-        self.assertEqual(len(candidates), 1)
+        self.assertIn(0x140000000 + 0x2100, candidates)
+        self.assertNotIn(0x140000000, candidates)
+        self.assertEqual(len(candidates), 2)
 
     def test_pdata_misaligned_size(self):
         config = SmdaConfig()
