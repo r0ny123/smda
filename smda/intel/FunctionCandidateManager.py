@@ -648,5 +648,5 @@ class FunctionCandidateManager:
                             break
                         rva_function_candidate = struct.unpack("I", packed_dword)[0]
                         if rva_function_candidate == 0:
-                            continue
+                            break
                         self.addExceptionCandidate(self.disassembly.binary_info.base_addr + rva_function_candidate)

@@ -72,9 +72,9 @@ class PdataExtractionTestSuite(unittest.TestCase):
 
         candidates = fcm.candidates
         self.assertIn(0x140000000 + 0x2000, candidates)
-        self.assertIn(0x140000000 + 0x2100, candidates)
+        self.assertNotIn(0x140000000 + 0x2100, candidates)
         self.assertNotIn(0x140000000, candidates)
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(len(candidates), 1)
 
     def test_pdata_misaligned_size(self):
         config = SmdaConfig()
