@@ -5,6 +5,10 @@ from smda.DisassemblyResult import DisassemblyResult
 from smda.intel.FunctionCandidateManager import FunctionCandidateManager
 from smda.SmdaConfig import SmdaConfig
 
+BASE_ADDR = 0x140000000
+BINARY_SIZE = 0x4000
+PDATA_OFFSET = 0x1000
+
 
 class MockBinaryInfo:
     def __init__(self, bitness, base_addr, binary, pdata_size=0):
@@ -18,7 +22,7 @@ class MockBinaryInfo:
         # yields name, start, end
         if self.pdata_size > 0:
             # .pdata at 0x1000
-            yield ".pdata", self.base_addr + 0x1000, self.base_addr + 0x1000 + self.pdata_size
+            yield ".pdata", self.base_addr + PDATA_OFFSET, self.base_addr + PDATA_OFFSET + self.pdata_size
 
 
 class PdataExtractionTestSuite(unittest.TestCase):
@@ -32,23 +36,23 @@ class PdataExtractionTestSuite(unittest.TestCase):
         pdata_bytes = b"".join(struct.pack("III", *entry) for entry in entries)
 
         # Fill binary with zeros
-        binary_size = 0x4000
+        binary_size = BINARY_SIZE
         binary = bytearray(binary_size)
 
         # Place pdata at 0x1000
-        binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
+        binary[PDATA_OFFSET : PDATA_OFFSET + len(pdata_bytes)] = pdata_bytes
 
         # Initialize Mock Disassembly and BinaryInfo
         disasm = DisassemblyResult()
-        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
+        disasm.binary_info = MockBinaryInfo(64, BASE_ADDR, bytes(binary), pdata_size=len(pdata_bytes))
 
         fcm.init(disasm)
 
         candidates = fcm.candidates
 
-        self.assertIn(0x140000000 + 0x2000, candidates)
-        self.assertIn(0x140000000 + 0x2050, candidates)
-        self.assertIn(0x140000000 + 0x2100, candidates)
+        self.assertIn(BASE_ADDR + 0x2000, candidates)
+        self.assertIn(BASE_ADDR + 0x2050, candidates)
+        self.assertIn(BASE_ADDR + 0x2100, candidates)
         self.assertEqual(len(candidates), 3)
 
     def test_pdata_with_zero_entry(self):
@@ -63,18 +67,18 @@ class PdataExtractionTestSuite(unittest.TestCase):
 
         pdata_bytes = b"".join(struct.pack("III", *entry) for entry in entries)
 
-        binary = bytearray(0x4000)
-        binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
+        binary = bytearray(BINARY_SIZE)
+        binary[PDATA_OFFSET : PDATA_OFFSET + len(pdata_bytes)] = pdata_bytes
 
         disasm = DisassemblyResult()
-        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
+        disasm.binary_info = MockBinaryInfo(64, BASE_ADDR, bytes(binary), pdata_size=len(pdata_bytes))
 
         fcm.init(disasm)
 
         candidates = fcm.candidates
-        self.assertIn(0x140000000 + 0x2000, candidates)
-        self.assertNotIn(0x140000000 + 0x2100, candidates)
-        self.assertNotIn(0x140000000, candidates)
+        self.assertIn(BASE_ADDR + 0x2000, candidates)
+        self.assertNotIn(BASE_ADDR + 0x2100, candidates)
+        self.assertNotIn(BASE_ADDR, candidates)
         self.assertEqual(len(candidates), 1)
 
     def test_pdata_misaligned_size(self):
@@ -88,16 +92,16 @@ class PdataExtractionTestSuite(unittest.TestCase):
         # Add some extra bytes to make it misaligned (not multiple of 12)
         pdata_bytes += b"\x90\x90"
 
-        binary = bytearray(0x4000)
-        binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
+        binary = bytearray(BINARY_SIZE)
+        binary[PDATA_OFFSET : PDATA_OFFSET + len(pdata_bytes)] = pdata_bytes
 
         disasm = DisassemblyResult()
-        disasm.binary_info = MockBinaryInfo(64, 0x140000000, bytes(binary), pdata_size=len(pdata_bytes))
+        disasm.binary_info = MockBinaryInfo(64, BASE_ADDR, bytes(binary), pdata_size=len(pdata_bytes))
 
         fcm.init(disasm)
 
         candidates = fcm.candidates
-        self.assertIn(0x140000000 + 0x2000, candidates)
+        self.assertIn(BASE_ADDR + 0x2000, candidates)
         self.assertEqual(len(candidates), 1)
 
 
