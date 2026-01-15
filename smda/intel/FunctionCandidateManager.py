@@ -644,10 +644,9 @@ class FunctionCandidateManager:
                     # .pdata entries are 12 bytes long (3 DWORDs)
                     for offset in range(rva_start, rva_end - 11, 12):
                         packed_dword = self.disassembly.binary_info.binary[offset : offset + 4]
-                        rva_function_candidate = None
-                        if len(packed_dword) == 4:
-                            rva_function_candidate = struct.unpack("I", packed_dword)[0]
-                        # if we hit a zero entry, we assume we reached the end of the table
-                        if not rva_function_candidate:
+                        if len(packed_dword) < 4:
+                            break
+                        rva_function_candidate = struct.unpack("I", packed_dword)[0]
+                        if rva_function_candidate == 0:
                             break
                         self.addExceptionCandidate(self.disassembly.binary_info.base_addr + rva_function_candidate)
