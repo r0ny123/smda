@@ -29,9 +29,7 @@ class PdataExtractionTestSuite(unittest.TestCase):
         # Entry format: Start RVA, End RVA, Unwind RVA
         entries = [(0x2000, 0x2040, 0x3000), (0x2050, 0x2090, 0x3010), (0x2100, 0x2150, 0x3020)]
 
-        pdata_bytes = b""
-        for start, end, unwind in entries:
-            pdata_bytes += struct.pack("III", start, end, unwind)
+        pdata_bytes = b"".join(struct.pack("III", *entry) for entry in entries)
 
         # Fill binary with zeros
         binary_size = 0x4000
@@ -62,9 +60,7 @@ class PdataExtractionTestSuite(unittest.TestCase):
             (0x2100, 0x2150, 0x3020),
         ]
 
-        pdata_bytes = b""
-        for start, end, unwind in entries:
-            pdata_bytes += struct.pack("III", start, end, unwind)
+        pdata_bytes = b"".join(struct.pack("III", *entry) for entry in entries)
 
         binary = bytearray(0x4000)
         binary[0x1000 : 0x1000 + len(pdata_bytes)] = pdata_bytes
@@ -86,9 +82,7 @@ class PdataExtractionTestSuite(unittest.TestCase):
 
         entries = [(0x2000, 0x2040, 0x3000)]
 
-        pdata_bytes = b""
-        for start, end, unwind in entries:
-            pdata_bytes += struct.pack("III", start, end, unwind)
+        pdata_bytes = b"".join(struct.pack("III", *entry) for entry in entries)
 
         # Add some extra bytes to make it misaligned (not multiple of 12)
         pdata_bytes += b"\x90\x90"
