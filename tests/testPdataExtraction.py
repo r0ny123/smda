@@ -49,6 +49,7 @@ class PdataExtractionTestSuite(unittest.TestCase):
         self.assertIn(0x140000000 + 0x2000, candidates)
         self.assertIn(0x140000000 + 0x2050, candidates)
         self.assertIn(0x140000000 + 0x2100, candidates)
+        self.assertEqual(len(candidates), 3)
 
     def test_pdata_with_zero_entry(self):
         config = SmdaConfig()
