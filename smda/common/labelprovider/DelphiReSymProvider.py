@@ -35,6 +35,10 @@ RTTI_CLASS_MAGIC_BYTE = 0x07  # Magic byte indicating RTTI_Class type
 PARAM_ENTRY_PADDING = 3
 
 
+class FalsePositiveVMTError(Exception):
+    """Raised when metadata parsing indicates a false positive VMT candidate."""
+
+
 @dataclass
 class ArchitectureSettings:
     """Architecture-specific settings for VMT/MDT parsing."""
@@ -83,6 +87,7 @@ class DelphiReSymProvider(AbstractLabelProvider):
         self._binary = None
         self._base_addr = 0
         self._bitness = 32
+        self._code_areas = []
         self._code_start = 0
         self._code_end = 0
         self._settings = None
@@ -104,13 +109,22 @@ class DelphiReSymProvider(AbstractLabelProvider):
             return
 
         # Code areas are virtual addresses - convert to file offsets for scanning
-        # Use the first code area (typically .text section)
-        code_area_start_va = code_areas[0][0]
-        code_area_end_va = code_areas[0][1]
+        self._code_areas = []
+        for code_area_start_va, code_area_end_va in code_areas:
+            start_offset = code_area_start_va - self._base_addr
+            end_offset = code_area_end_va - self._base_addr
+            if start_offset < 0 or end_offset <= start_offset:
+                continue
+            if end_offset > len(self._binary):
+                continue
+            self._code_areas.append((start_offset, end_offset))
 
-        # Convert virtual addresses to file offsets
-        self._code_start = code_area_start_va - self._base_addr
-        self._code_end = code_area_end_va - self._base_addr
+        if not self._code_areas:
+            LOGGER.debug("No valid code areas found, skipping DelphiReSym parsing")
+            return
+
+        # Use the first code area (typically .text section)
+        self._code_start, self._code_end = self._code_areas[0]
 
         # Validate the offsets are within binary bounds
         if self._code_start < 0 or self._code_end > len(self._binary):
@@ -185,9 +199,17 @@ class DelphiReSymProvider(AbstractLabelProvider):
         except (IndexError, UnicodeDecodeError):
             return ""
 
-    def _offset_in_code_area(self, offset: int) -> bool:
-        """Check if offset is within code area."""
-        return self._code_start <= offset < self._code_end
+    def _offset_in_code_area(self, offset: int, size: int = 1) -> bool:
+        """Check if offset range is within any code area."""
+        if offset is None:
+            return False
+        size = max(size, 1)
+        end_offset = offset + size
+        if offset < 0 or end_offset > len(self._binary):
+            return False
+        if self._code_areas:
+            return any(start <= offset and end_offset <= end for start, end in self._code_areas)
+        return self._code_start <= offset < self._code_end and end_offset <= self._code_end
 
     def _addr_to_offset(self, addr: int) -> int:
         """Convert virtual address to file offset."""
@@ -304,6 +326,8 @@ class DelphiReSymProvider(AbstractLabelProvider):
             if func_addr is None:
                 return None
             func_offset = self._addr_to_offset(func_addr)
+            if not self._offset_in_code_area(func_offset):
+                raise FalsePositiveVMTError("Function entry point outside code area")
 
             # Function name (Pascal string at offset +ptr_size+2)
             func_name_offset = method_entry_offset + self._settings.ptr_size + 2
@@ -326,7 +350,11 @@ class DelphiReSymProvider(AbstractLabelProvider):
             if param_count is not None and param_count > 0:
                 # Parse parameters
                 param_offset = param_count_offset + 2
+                if not self._offset_in_code_area(param_offset):
+                    raise FalsePositiveVMTError("Parameter table outside code area")
                 for _ in range(param_count):
+                    if not self._offset_in_code_area(param_offset):
+                        raise FalsePositiveVMTError("Parameter entry outside code area")
                     # Parameter RTTI (double-dereferenced pointer)
                     param_type_name = self._resolve_type_from_double_ptr(param_offset)
 
@@ -341,11 +369,13 @@ class DelphiReSymProvider(AbstractLabelProvider):
 
             return method_info
 
+        except FalsePositiveVMTError:
+            raise
         except Exception as e:
             LOGGER.debug(f"Error extracting method info at 0x{method_entry_offset:x}: {e}")
             return None
 
-    def _parse_mdt(self, mdt_offset: int) -> list:
+    def _parse_mdt(self, mdt_offset: int) -> Optional[list]:
         """Parse a Method Definition Table to extract method information."""
         methods = []
 
@@ -365,7 +395,10 @@ class DelphiReSymProvider(AbstractLabelProvider):
                 continue
 
             me_offset = self._addr_to_offset(me_addr)
-            method_info = self._extract_method_info(me_offset)
+            try:
+                method_info = self._extract_method_info(me_offset)
+            except FalsePositiveVMTError:
+                return None
 
             if method_info:
                 methods.append(method_info)
@@ -402,6 +435,9 @@ class DelphiReSymProvider(AbstractLabelProvider):
 
             # Parse all methods in this MDT
             methods = self._parse_mdt(mdt_offset)
+            if methods is None:
+                LOGGER.debug("Skipping VMT due to invalid metadata layout")
+                continue
 
             # Store function symbols
             for method in methods:
@@ -412,7 +448,13 @@ class DelphiReSymProvider(AbstractLabelProvider):
 
                 # Add return type and parameters to make it more informative
                 if method.return_type != "void" or method.parameters:
-                    param_str = ", ".join([f"{p.parameter_name}: {p.type_name or '?'}" for p in method.parameters])
+                    param_entries = []
+                    for param in method.parameters:
+                        param_type = param.type_name
+                        if not param_type and namespace and param.parameter_name == "Self":
+                            param_type = namespace
+                        param_entries.append(f"{param.parameter_name}: {param_type or '?'}")
+                    param_str = ", ".join(param_entries)
                     full_name = f"{full_name}({param_str}): {method.return_type}"
 
                 self._func_symbols[func_addr] = full_name
