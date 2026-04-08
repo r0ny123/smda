@@ -125,7 +125,7 @@ class DalvikDisassembler:
                 length_bytes = len(bytecode) - idx
 
             i_bytes = bytes(bytecode[idx : idx + length_bytes])
-            i_address = start_addr + idx
+            i_address = bytecode_offset + idx
             i_size = length_bytes
             i_mnemonic = mnemonic
             i_op_str = ""
