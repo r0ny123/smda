@@ -111,7 +111,7 @@ class DalvikDisassembler:
         raw_data = method_info["raw_data"]
         bytecode = raw_data[bytecode_offset : bytecode_offset + insns_size_bytes]
 
-        state = FunctionAnalysisState(start_addr, start_addr, self.disassembly)
+        state = FunctionAnalysisState(start_addr, self.disassembly)
 
         idx = 0
         while idx < len(bytecode):
@@ -191,7 +191,7 @@ class DalvikDisassembler:
         try:
             dex_file = lief.DEX.parse(binary_info.raw_data)
         except TypeError:
-            dex_file = lief.DEX.parse(list(binary_info.raw_data))
+            dex_file = lief.DEX.parse(binary_info.raw_data)
 
         if dex_file:
             for method in dex_file.methods:
