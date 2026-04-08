@@ -4,6 +4,7 @@ from smda.utility.DelphiKbFileLoader import DelphiKbFileLoader
 from smda.utility.ElfFileLoader import ElfFileLoader
 from smda.utility.MachoFileLoader import MachoFileLoader
 from smda.utility.PeFileLoader import PeFileLoader
+from smda.utility.DexFileLoader import DexFileLoader
 
 
 class FileLoader:
@@ -16,7 +17,7 @@ class FileLoader:
     _abi = ""
     _architecture = ""
     _code_areas = []
-    file_loaders = [PeFileLoader, ElfFileLoader, MachoFileLoader, DelphiKbFileLoader]
+    file_loaders = [PeFileLoader, ElfFileLoader, MachoFileLoader, DelphiKbFileLoader, DexFileLoader]
 
     def __init__(self, file_path, load_file=True, map_file=False):
         self._file_path = file_path
