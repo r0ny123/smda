@@ -1,11 +1,7 @@
-import lief
-
 class DexFileLoader:
     @staticmethod
     def isCompatible(data):
-        if len(data) >= 3 and data[0:3] == b'dex':
-            return True
-        return False
+        return bool(len(data) >= 3 and data[0:3] == b"dex")
 
     @staticmethod
     def mapBinary(data):

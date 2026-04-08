@@ -1,6 +1,6 @@
+import contextlib
 import datetime
 import logging
-from typing import TYPE_CHECKING, Any, Optional, Union
 
 import lief
 
@@ -22,12 +22,12 @@ DALVIK_OPCODES = {
     0x07: ("move-object", 1),
     0x08: ("move-object/from16", 2),
     0x09: ("move-object/16", 3),
-    0x0a: ("move-result", 1),
-    0x0b: ("move-result-wide", 1),
-    0x0c: ("move-result-object", 1),
-    0x0d: ("move-exception", 1),
-    0x0e: ("return-void", 1),
-    0x0f: ("return", 1),
+    0x0A: ("move-result", 1),
+    0x0B: ("move-result-wide", 1),
+    0x0C: ("move-result-object", 1),
+    0x0D: ("move-exception", 1),
+    0x0E: ("return-void", 1),
+    0x0F: ("return", 1),
     0x10: ("return-wide", 1),
     0x11: ("return-object", 1),
     0x12: ("const/4", 1),
@@ -38,12 +38,12 @@ DALVIK_OPCODES = {
     0x17: ("const-wide/32", 3),
     0x18: ("const-wide", 5),
     0x19: ("const-wide/high16", 2),
-    0x1a: ("const-string", 2),
-    0x1b: ("const-string/jumbo", 3),
-    0x1c: ("const-class", 2),
-    0x1d: ("monitor-enter", 1),
-    0x1e: ("monitor-exit", 1),
-    0x1f: ("check-cast", 2),
+    0x1A: ("const-string", 2),
+    0x1B: ("const-string/jumbo", 3),
+    0x1C: ("const-class", 2),
+    0x1D: ("monitor-enter", 1),
+    0x1E: ("monitor-exit", 1),
+    0x1F: ("check-cast", 2),
     0x20: ("instance-of", 2),
     0x21: ("array-length", 1),
     0x22: ("new-instance", 2),
@@ -54,12 +54,12 @@ DALVIK_OPCODES = {
     0x27: ("throw", 1),
     0x28: ("goto", 1),
     0x29: ("goto/16", 2),
-    0x2a: ("goto/32", 3),
-    0x2b: ("packed-switch", 3),
-    0x2c: ("sparse-switch", 3),
-    0x2d: ("cmpl-float", 2),
-    0x2e: ("cmpg-float", 2),
-    0x2f: ("cmpl-double", 2),
+    0x2A: ("goto/32", 3),
+    0x2B: ("packed-switch", 3),
+    0x2C: ("sparse-switch", 3),
+    0x2D: ("cmpl-float", 2),
+    0x2E: ("cmpg-float", 2),
+    0x2F: ("cmpl-double", 2),
     0x30: ("cmpg-double", 2),
     0x31: ("cmp-long", 2),
     0x32: ("if-eq", 2),
@@ -70,12 +70,12 @@ DALVIK_OPCODES = {
     0x37: ("if-le", 2),
     0x38: ("if-eqz", 2),
     0x39: ("if-nez", 2),
-    0x3a: ("if-ltz", 2),
-    0x3b: ("if-gez", 2),
-    0x3c: ("if-gtz", 2),
-    0x3d: ("if-lez", 2),
-    0x6e: ("invoke-virtual", 3),
-    0x6f: ("invoke-super", 3),
+    0x3A: ("if-ltz", 2),
+    0x3B: ("if-gez", 2),
+    0x3C: ("if-gtz", 2),
+    0x3D: ("if-lez", 2),
+    0x6E: ("invoke-virtual", 3),
+    0x6F: ("invoke-super", 3),
     0x70: ("invoke-direct", 3),
     0x71: ("invoke-static", 3),
     0x72: ("invoke-interface", 3),
@@ -88,6 +88,7 @@ DALVIK_OPCODES = {
 
 # The size is in 16-bit code units.
 
+
 class DalvikDisassembler:
     def __init__(self, config):
         self.config = config
@@ -95,8 +96,8 @@ class DalvikDisassembler:
         self.disassembly.smda_version = config.VERSION
 
     def analyzeFunction(self, dex_file, method_info):
-        start_addr = method_info['offset']
-        code_item = method_info['code_item']
+        start_addr = method_info["offset"]
+        code_item = method_info["code_item"]
 
         # In DEX, the code_item header is 16 bytes. The bytecode immediately follows.
         insns_size_units = code_item.insns_size
@@ -104,11 +105,11 @@ class DalvikDisassembler:
         bytecode_offset = start_addr + 16
 
         if bytecode_offset + insns_size_bytes <= len(dex_file.header):
-            pass # LIEF parsing might just map it, but we have binary_info
+            pass  # LIEF parsing might just map it, but we have binary_info
 
         # We need raw bytecode. method_info has raw_data.
-        raw_data = method_info['raw_data']
-        bytecode = raw_data[bytecode_offset:bytecode_offset + insns_size_bytes]
+        raw_data = method_info["raw_data"]
+        bytecode = raw_data[bytecode_offset : bytecode_offset + insns_size_bytes]
 
         state = FunctionAnalysisState(start_addr, start_addr, self.disassembly)
 
@@ -123,7 +124,7 @@ class DalvikDisassembler:
             if idx + length_bytes > len(bytecode):
                 length_bytes = len(bytecode) - idx
 
-            i_bytes = bytes(bytecode[idx:idx + length_bytes])
+            i_bytes = bytes(bytecode[idx : idx + length_bytes])
             i_address = start_addr + idx
             i_size = length_bytes
             i_mnemonic = mnemonic
@@ -137,33 +138,33 @@ class DalvikDisassembler:
             elif i_mnemonic.startswith("goto"):
                 target_offset = 0
                 if i_mnemonic == "goto":
-                    target_offset = int.from_bytes(i_bytes[1:2], byteorder='little', signed=True) * 2
+                    target_offset = int.from_bytes(i_bytes[1:2], byteorder="little", signed=True) * 2
                 elif i_mnemonic == "goto/16":
-                    target_offset = int.from_bytes(i_bytes[2:4], byteorder='little', signed=True) * 2
+                    target_offset = int.from_bytes(i_bytes[2:4], byteorder="little", signed=True) * 2
                 elif i_mnemonic == "goto/32":
-                    target_offset = int.from_bytes(i_bytes[2:6], byteorder='little', signed=True) * 2
+                    target_offset = int.from_bytes(i_bytes[2:6], byteorder="little", signed=True) * 2
                 target_address = i_address + target_offset
                 state.addCodeRef(i_address, target_address, by_jump=True)
                 i_op_str = hex(target_address)
                 state.setNextInstructionReachable(False)
             elif i_mnemonic.startswith("if-"):
-                target_offset = int.from_bytes(i_bytes[2:4], byteorder='little', signed=True) * 2
+                target_offset = int.from_bytes(i_bytes[2:4], byteorder="little", signed=True) * 2
                 target_address = i_address + target_offset
                 state.addCodeRef(i_address, target_address, by_jump=True)
                 i_op_str = hex(target_address)
             elif i_mnemonic.startswith("invoke-"):
-                method_idx = int.from_bytes(i_bytes[2:4], byteorder='little')
+                method_idx = int.from_bytes(i_bytes[2:4], byteorder="little")
                 try:
                     target_method = dex_file.methods[method_idx]
                     i_op_str = target_method.name
                     # Also we can update API information if we want.
-                except:
+                except Exception:
                     i_op_str = f"method_idx_{method_idx}"
 
             state.addInstruction(i_address, i_size, i_mnemonic, i_op_str, i_bytes)
             idx += length_bytes
 
-        state.label = method_info['name']
+        state.label = method_info["name"]
         state.finalizeAnalysis()
         return state
 
@@ -181,11 +182,9 @@ class DalvikDisassembler:
         self.disassembly.language = "dalvik"
 
         # LIEF natively accepts bytes or bytearray
-        if hasattr(lief.DEX, 'parse'):
-            try:
-                dex_file = lief.DEX.parse(list(binary_info.raw_data)) # Fallback if list is needed
-            except:
-                pass
+        if hasattr(lief.DEX, "parse"):
+            with contextlib.suppress(Exception):
+                dex_file = lief.DEX.parse(list(binary_info.raw_data))  # Fallback if list is needed
 
         # In recent LIEF, we can just pass the raw bytes array
         # Let's try raw bytes first, then fallback to list
@@ -205,10 +204,10 @@ class DalvikDisassembler:
                 # since DEX doesn't map directly, we use code_offset as address
 
                 method_info = {
-                    'offset': method.code_offset,
-                    'name': f"{method.cls.fullname}->{method.name}",
-                    'code_item': code_info,
-                    'raw_data': binary_info.raw_data
+                    "offset": method.code_offset,
+                    "name": f"{method.cls.fullname}->{method.name}",
+                    "code_item": code_info,
+                    "raw_data": binary_info.raw_data,
                 }
                 if cbAnalysisTimeout and cbAnalysisTimeout():
                     break

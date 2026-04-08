@@ -1,10 +1,10 @@
 import os
 
 from smda.utility.DelphiKbFileLoader import DelphiKbFileLoader
+from smda.utility.DexFileLoader import DexFileLoader
 from smda.utility.ElfFileLoader import ElfFileLoader
 from smda.utility.MachoFileLoader import MachoFileLoader
 from smda.utility.PeFileLoader import PeFileLoader
-from smda.utility.DexFileLoader import DexFileLoader
 
 
 class FileLoader:

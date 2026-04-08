@@ -7,9 +7,9 @@ from smda.cil.CilDisassembler import CilDisassembler
 from smda.common.BinaryInfo import BinaryInfo
 from smda.common.labelprovider.GoLabelProvider import GoSymbolProvider
 from smda.common.SmdaReport import SmdaReport
+from smda.dalvik.DalvikDisassembler import DalvikDisassembler
 from smda.ida.IdaExporter import IdaExporter
 from smda.intel.IntelDisassembler import IntelDisassembler
-from smda.dalvik.DalvikDisassembler import DalvikDisassembler
 from smda.SmdaConfig import SmdaConfig
 from smda.utility.FileLoader import FileLoader
 from smda.utility.MemoryFileLoader import MemoryFileLoader

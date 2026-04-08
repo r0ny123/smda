@@ -1,1 +1,1 @@
-from .DalvikDisassembler import DalvikDisassembler
+from .DalvikDisassembler import DalvikDisassembler as DalvikDisassembler
