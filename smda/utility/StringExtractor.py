@@ -7,6 +7,10 @@ from smda.common import SmdaFunction
 # ported back from our PR to capa v4.0.0
 # https://github.com/mandiant/capa/blob/v4.0.0/capa/features/extractors/smda/insn.py
 
+# Precomputed set of printable characters for O(1) membership checks
+# (string.printable is a string, so `in` does a linear scan; a set is O(1))
+_PRINTABLE_CHARS = frozenset(string.printable)
+
 
 def read_bytes(smda_report, va, num_bytes=None):
     """
@@ -64,7 +68,7 @@ def detect_ascii_len(smda_report, offset, maxlen=None):
     char = smda_report.buffer[rva]
     while (
         char < 127
-        and chr(char) in string.printable
+        and chr(char) in _PRINTABLE_CHARS
         and (maxlen is None or ascii_len < maxlen)
         and rva + 1 < len(smda_report.buffer)
     ):
@@ -87,7 +91,7 @@ def detect_unicode_len(smda_report, offset, maxlen=None):
     second_char = smda_report.buffer[rva + 1]
     while (
         char < 127
-        and chr(char) in string.printable
+        and chr(char) in _PRINTABLE_CHARS
         and second_char == 0
         and (maxlen is None or unicode_len < 2 * maxlen)
         and rva + 3 < len(smda_report.buffer)
