@@ -2,6 +2,6 @@ pytest
 capstone
 dncil
 dnfile
-lief>=0.16.0
+lief>=0.17.6
 ruff
 pre-commit
