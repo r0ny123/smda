@@ -42,7 +42,7 @@ def main() -> int:
         return 0
 
     body = args.body_file.read_text(encoding="utf-8")
-    comments_url = f"https://api.github.com/repos/{args.repo}/issues/{args.issue_number}/comments"
+    comments_url = f"https://api.github.com/repos/{args.repo}/issues/{args.issue_number}/comments?per_page=100"
     try:
         comments = request_json("GET", comments_url, token)
         existing = next((item for item in comments if args.marker in str(item.get("body", ""))), None)

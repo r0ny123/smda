@@ -155,6 +155,158 @@ class TestPerformanceGate(unittest.TestCase):
         self.assertIn("Failure diagnostics captured", comment_text)
         self.assertIn("Memray native allocation", comment_text)
 
+    @patch("pyperf.BenchmarkSuite.load")
+    def test_exception_in_base_only_passes(self, mock_load):
+        mock_bench_base = MagicMock()
+        mock_bench_base.mean.return_value = 1.0
+        mock_bench_base.stdev.return_value = 0.05
+        mock_bench_head = MagicMock()
+        mock_bench_head.mean.return_value = 1.0
+        mock_bench_head.stdev.return_value = 0.05
+        mock_suite_base = MagicMock()
+        mock_suite_base.get_benchmarks.return_value = [mock_bench_base]
+        mock_suite_head = MagicMock()
+        mock_suite_head.get_benchmarks.return_value = [mock_bench_head]
+        mock_load.side_effect = [mock_suite_base, mock_suite_head]
+
+        base_summary_path = Path(self.temp_dir) / "base_summary.json"
+        head_summary_path = Path(self.temp_dir) / "head_summary.json"
+        base_summary_path.write_text(
+            json.dumps(
+                {
+                    "total_report_execution_time": 10.0,
+                    "target_count": 5,
+                    "exception_count": 1,
+                    "total_functions": 100,
+                    "total_instructions": 500,
+                    "max_rss_kb": 20000,
+                    "status_counts": {"ok": 5},
+                }
+            ),
+            encoding="utf-8",
+        )
+        head_summary_path.write_text(
+            json.dumps(
+                {
+                    "total_report_execution_time": 10.0,
+                    "target_count": 5,
+                    "exception_count": 0,
+                    "total_functions": 100,
+                    "total_instructions": 500,
+                    "max_rss_kb": 20000,
+                    "status_counts": {"ok": 5},
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = MagicMock(
+            base_pyperf=Path(self.temp_dir) / "base.pyperf.json",
+            head_pyperf=Path(self.temp_dir) / "head.pyperf.json",
+            base_summary=base_summary_path,
+            head_summary=head_summary_path,
+            threshold_percent=5.0,
+        )
+
+        result = compare_perf_gate.build_result(args)
+        self.assertFalse(result["failed"])
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["corpus"]["exceptions"], 0)
+
+    @patch("pyperf.BenchmarkSuite.load")
+    def test_exception_in_head_fails(self, mock_load):
+        mock_bench_base = MagicMock()
+        mock_bench_base.mean.return_value = 1.0
+        mock_bench_base.stdev.return_value = 0.05
+        mock_bench_head = MagicMock()
+        mock_bench_head.mean.return_value = 1.0
+        mock_bench_head.stdev.return_value = 0.05
+        mock_suite_base = MagicMock()
+        mock_suite_base.get_benchmarks.return_value = [mock_bench_base]
+        mock_suite_head = MagicMock()
+        mock_suite_head.get_benchmarks.return_value = [mock_bench_head]
+        mock_load.side_effect = [mock_suite_base, mock_suite_head]
+
+        base_summary_path = Path(self.temp_dir) / "base_summary.json"
+        head_summary_path = Path(self.temp_dir) / "head_summary.json"
+        base_summary_path.write_text(
+            json.dumps(
+                {
+                    "total_report_execution_time": 10.0,
+                    "target_count": 5,
+                    "exception_count": 0,
+                    "total_functions": 100,
+                    "total_instructions": 500,
+                    "max_rss_kb": 20000,
+                    "status_counts": {"ok": 5},
+                }
+            ),
+            encoding="utf-8",
+        )
+        head_summary_path.write_text(
+            json.dumps(
+                {
+                    "total_report_execution_time": 10.0,
+                    "target_count": 5,
+                    "exception_count": 2,
+                    "total_functions": 100,
+                    "total_instructions": 500,
+                    "max_rss_kb": 20000,
+                    "status_counts": {"ok": 3, "exception": 2},
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = MagicMock(
+            base_pyperf=Path(self.temp_dir) / "base.pyperf.json",
+            head_pyperf=Path(self.temp_dir) / "head.pyperf.json",
+            base_summary=base_summary_path,
+            head_summary=head_summary_path,
+            threshold_percent=5.0,
+        )
+
+        result = compare_perf_gate.build_result(args)
+        compare_perf_gate.build_comment(result)
+
+        self.assertTrue(result["failed"])
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual(result["corpus"]["exceptions"], 2)
+        self.assertIn("2 runner exceptions were recorded in the PR branch", result["reasons"])
+
+    def test_sample_memory_fallback(self):
+        import threading
+
+        import psutil
+
+        mock_proc = MagicMock()
+        mock_proc.memory_full_info.side_effect = psutil.AccessDenied()
+
+        mock_mem_info = MagicMock()
+        mock_mem_info.rss = 987654
+
+        stop_event = threading.Event()
+
+        def mock_memory_info_call():
+            stop_event.set()
+            return mock_mem_info
+
+        mock_proc.memory_info.side_effect = mock_memory_info_call
+
+        with patch("psutil.Process", return_value=mock_proc):
+            samples = []
+            profile_diagnostics.sample_memory(stop_event, 0.01, samples)
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["rss"], 987654)
+        self.assertEqual(samples[0]["uss"], 0)
+        self.assertEqual(samples[0]["pss"], 0)
+
+    def test_discover_targets_has_empty_sha256(self):
+        (self.corpus_dir / "family_a").mkdir()
+        (self.corpus_dir / "family_a" / "dump_0x00400000").write_bytes(b"MZ\x00\x00")
+        targets = smda_perf_runner.discover_targets(self.corpus_dir)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].sha256, "")
+
 
 if __name__ == "__main__":
     unittest.main()

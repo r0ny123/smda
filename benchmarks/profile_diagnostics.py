@@ -83,13 +83,20 @@ def sample_memory(stop: threading.Event, interval: float, samples: list[dict[str
     proc = psutil.Process()
     started = time.perf_counter()
     while not stop.is_set():
-        info = proc.memory_full_info()
+        try:
+            info = proc.memory_full_info()
+            uss = int(getattr(info, "uss", 0))
+            pss = int(getattr(info, "pss", 0))
+        except (psutil.AccessDenied, AttributeError):
+            info = proc.memory_info()
+            uss = 0
+            pss = 0
         samples.append(
             {
                 "elapsed": time.perf_counter() - started,
                 "rss": int(info.rss),
-                "uss": int(getattr(info, "uss", 0)),
-                "pss": int(getattr(info, "pss", 0)),
+                "uss": uss,
+                "pss": pss,
             }
         )
         stop.wait(interval)

@@ -8,7 +8,6 @@ disassembles files and memory dumps; it never executes corpus contents.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -34,14 +33,6 @@ class Target:
     version: str = ""
     sha256: str = ""
     size_bytes: int = 0
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fin:
-        for chunk in iter(lambda: fin.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def parse_base_addr(filename: str) -> int:
@@ -98,7 +89,7 @@ def load_manifest_targets(corpus_root: Path, manifest_path: Path) -> list[Target
                 mode=infer_mode(path.name, item.get("mode")),
                 family=str(item.get("family") or ""),
                 version=str(item.get("version") or ""),
-                sha256=str(item.get("sha256") or sha256_file(path)),
+                sha256=str(item.get("sha256") or ""),
                 size_bytes=int(item.get("size_bytes") or path.stat().st_size),
             )
         )
@@ -126,7 +117,7 @@ def discover_targets(corpus_root: Path) -> list[Target]:
                     mode=infer_mode(filename),
                     family=parts[0] if parts else "",
                     version=parts[1] if len(parts) > 2 else "",
-                    sha256=sha256_file(path),
+                    sha256="",
                     size_bytes=path.stat().st_size,
                 )
             )

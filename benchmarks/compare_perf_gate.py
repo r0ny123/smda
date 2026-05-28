@@ -76,9 +76,9 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
     threshold_percent = float(args.threshold_percent)
     status_mismatch = (base_summary.get("status_counts") or {}) != (head_summary.get("status_counts") or {})
     target_mismatch = int(base_summary.get("target_count") or 0) != int(head_summary.get("target_count") or 0)
-    exception_count = int(base_summary.get("exception_count") or 0) + int(head_summary.get("exception_count") or 0)
+    head_exception_count = int(head_summary.get("exception_count") or 0)
     performance_degraded = runtime_delta_percent > threshold_percent
-    failed = performance_degraded or status_mismatch or target_mismatch or exception_count > 0
+    failed = performance_degraded or status_mismatch or target_mismatch or head_exception_count > 0
     reasons = []
     if performance_degraded:
         reasons.append(f"pyperf mean regressed by {format_percent(runtime_delta_percent)}")
@@ -86,8 +86,8 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
         reasons.append("base/head status counts differ")
     if target_mismatch:
         reasons.append("base/head target counts differ")
-    if exception_count:
-        reasons.append(f"{exception_count} runner exceptions were recorded")
+    if head_exception_count:
+        reasons.append(f"{head_exception_count} runner exceptions were recorded in the PR branch")
     return {
         "failed": failed,
         "result": "FAIL" if failed else "PASS",
@@ -110,7 +110,7 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
             "head_targets": int(head_summary.get("target_count") or 0),
             "base_status": status_text(base_summary),
             "head_status": status_text(head_summary),
-            "exceptions": exception_count,
+            "exceptions": head_exception_count,
         },
         "output_shape": {
             "base_functions": int(base_summary.get("total_functions") or 0),
