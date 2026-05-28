@@ -21,3 +21,6 @@ coverage-html/
 
 # Tool caches
 .ruff_cache/
+
+# Benchmark results
+*results.json
