@@ -24,7 +24,7 @@ jobs:
   # whether the malpedia password is available, which gates the heavier jobs.
   fixture_gate:
     name: Fixture Benchmark Gate
-    runs-on: ubuntu-latest
+    runs-on: macos-latest-xlarge
     timeout-minutes: 15
     outputs:
       password_available: ${{ steps.check_password.outputs.available }}
