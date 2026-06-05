@@ -246,19 +246,27 @@ class ElfFileLoader:
 
     @staticmethod
     def getArchitecture(binary, parsed=_NOT_PROVIDED):
-        del binary, parsed
+        # Architecture is selected from the ELF machine type (per editing-conventions).
+        # AArch64 routes to the dedicated backend; every other machine type keeps the
+        # historical x86/x64 ("intel") default.
+        elffile = lief.parse(binary) if parsed is _NOT_PROVIDED else parsed
+        if elffile is not None and elffile.header.machine_type == lief.ELF.ARCH.AARCH64:
+            return "aarch64"
         return "intel"
 
     @staticmethod
     def getBitness(binary, parsed=_NOT_PROVIDED):
-        # TODO add machine types whenever we add more architectures
+        # Bitness is the ELF class field (identity_class), which is architecture
+        # independent: this is what lets AArch64 — and any future 64-bit machine
+        # type — report 64 instead of falling through to 0. Architecture itself is
+        # resolved separately from header.machine_type (see getArchitecture).
         elffile = lief.parse(binary) if parsed is _NOT_PROVIDED else parsed
         if not elffile:
             return 0
-        machine_type = elffile.header.machine_type
-        if machine_type == lief.ELF.ARCH.X86_64:
+        identity_class = elffile.header.identity_class
+        if identity_class == lief.ELF.Header.CLASS.ELF64:
             return 64
-        elif machine_type == lief.ELF.ARCH.I386:
+        elif identity_class == lief.ELF.Header.CLASS.ELF32:
             return 32
         return 0
 
