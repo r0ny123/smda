@@ -238,7 +238,7 @@ class X86Backend(ArchBackend):
                         d.disassembly.binary_info.bitness == 32 and reg == "eax"
                     ):
                         try:
-                            syscall_number_str = int(prev_operands[1].strip(), 16)
+                            syscall_number = int(prev_operands[1].strip(), 16)
                         except ValueError:
                             # TODO we should do backtracking on the basic block to resolve the value properly
                             LOGGER.debug(
@@ -246,8 +246,8 @@ class X86Backend(ArchBackend):
                                 prev_operands,
                                 i_address,
                             )
-                            syscall_number_str = None
-                        if syscall_number_str == 60:
+                            syscall_number = None
+                        if syscall_number == 60:
                             self._analyzeEndInstruction(state)
                             LOGGER.debug(
                                 "  analyzeFunction() found program ending instruction @0x%08x",

@@ -91,6 +91,8 @@ class RecursiveDisassembler:
             self.active_symbol_providers = [p for p in self.symbol_providers if p.is_active()]
 
     def resolveApi(self, to_address, api_address):
+        # Lazy guard: some unit tests construct the disassembler via __new__ (no
+        # __init__), so the cache may not exist yet — do not remove.
         if not hasattr(self, "_api_cache"):
             self._api_cache = {}
         cache_key = (to_address, api_address)
@@ -107,6 +109,8 @@ class RecursiveDisassembler:
         return ("", "")
 
     def resolveSymbol(self, address):
+        # Lazy guard: some unit tests construct the disassembler via __new__ (no
+        # __init__), so the cache may not exist yet — do not remove.
         if not hasattr(self, "_symbol_cache"):
             self._symbol_cache = {}
         if address in self._symbol_cache:
