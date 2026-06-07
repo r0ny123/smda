@@ -1,0 +1,5 @@
+# Compiled binaries – regenerate with build_blacklotus.sh
+built/
+
+# Temporary build artifacts
+/tmp/tmp.*
