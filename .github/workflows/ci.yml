@@ -82,8 +82,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # Verify mcrit install across every supported Python on the primary
+        # (ubuntu) runner, but only on the boundary versions (oldest/newest) for
+        # the costlier windows/macos runners. Middle minor versions on those
+        # platforms add little signal beyond the boundary checks, which already
+        # exercise each OS's native-wheel install path.
+        include:
+          - { os: ubuntu-latest, python-version: "3.10" }
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: ubuntu-latest, python-version: "3.14" }
+          - { os: windows-latest, python-version: "3.10" }
+          - { os: windows-latest, python-version: "3.14" }
+          - { os: macos-latest, python-version: "3.10" }
+          - { os: macos-latest, python-version: "3.14" }
 
     steps:
       - name: Checkout code
