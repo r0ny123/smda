@@ -123,6 +123,8 @@ class X86Backend(ArchBackend):
         i_address, i_size, i_mnemonic, i_op_str = i
         jump_destination = d.getReferencedAddr(i_op_str)
         if jump_destination:
+            # loops are conditional branches: queue the taken edge as well
+            state.addBlockToQueue(jump_destination)
             state.addCodeRef(i_address, int(i_op_str, 16), by_jump=True)
         # loops have two exits and should thus be handled as block ending instruction
         state.addBlockToQueue(i_address + i_size)
