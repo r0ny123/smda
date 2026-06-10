@@ -158,7 +158,11 @@ class RecursiveDisassembler:
             current_byte = self.disassembly.getByte(current_offset)
             if isinstance(current_byte, str):
                 current_byte = ord(current_byte)
-            while current_byte < size and current_offset not in self.fc_manager.getFunctionStartCandidates():
+            while (
+                current_byte is not None
+                and current_byte < size
+                and current_offset not in self.fc_manager.getFunctionStartCandidates()
+            ):
                 indirect_switch_bytes.append(current_offset)
                 current_offset += 1
                 current_byte = self.disassembly.getByte(current_offset)
@@ -168,7 +172,8 @@ class RecursiveDisassembler:
         return indirect_switch_bytes
 
     def _handleCallTarget(self, state, from_addr, to_addr):
-        if to_addr and self.disassembly.isAddrWithinMemoryImage(to_addr):
+        # explicit None check: address 0 is valid in base-0 buffers
+        if to_addr is not None and self.disassembly.isAddrWithinMemoryImage(to_addr):
             state.addCodeRef(from_addr, to_addr)
         if state.start_addr == to_addr:
             state.setRecursion(True)

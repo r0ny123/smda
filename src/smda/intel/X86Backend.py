@@ -224,7 +224,7 @@ class X86Backend(ArchBackend):
                 "  analyzeFunction() found ending instruction @0x%08x",
                 i_address,
             )
-            if previous_address and previous_mnemonic == "push":
+            if previous_address is not None and previous_mnemonic == "push":
                 push_ret_destination = d.getReferencedAddr(previous_op_str)
                 if d.disassembly.isAddrWithinMemoryImage(push_ret_destination):
                     LOGGER.debug(
@@ -240,7 +240,7 @@ class X86Backend(ArchBackend):
                 i_address,
             )
         elif i_mnemonic_noprefix in ["syscall"]:
-            if previous_address and previous_mnemonic == "mov":
+            if previous_address is not None and previous_mnemonic == "mov":
                 prev_operands = previous_op_str.split(",")
                 if len(prev_operands) == 2:
                     reg = prev_operands[0].strip().lower()
@@ -263,7 +263,7 @@ class X86Backend(ArchBackend):
                                 "  analyzeFunction() found program ending instruction @0x%08x",
                                 i_address,
                             )
-        elif previous_address and i_address != start_addr and previous_mnemonic == "call":
+        elif previous_address is not None and i_address != start_addr and previous_mnemonic == "call":
             instruction_sequence = list(d.capstone.disasm(d._getDisasmWindowBuffer(i_address), i_address))
             if (
                 d.disassembly.language["_guess"] != "go" and d.fc_manager.isAlignmentSequence(instruction_sequence)
