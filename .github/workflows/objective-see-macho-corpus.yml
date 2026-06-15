@@ -1,0 +1,109 @@
+name: Objective-See Mach-O Corpus Validation
+
+on:
+  push:
+    branches:
+      - validation/objective-see-macho-corpus
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate Objective-See Mach-O Corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OBJECTIVE_SEE_REPO: https://github.com/objective-see/Malware.git
+      OBJECTIVE_SEE_ZIP_PASSWORD: infect3d
+    steps:
+      - name: Checkout SMDA validation branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Clone Objective-See malware corpus
+        run: |
+          git clone --depth 1 "$OBJECTIVE_SEE_REPO" objective-see-malware
+          git -C objective-see-malware rev-parse HEAD | tee objective-see-commit.txt
+          find objective-see-malware -maxdepth 1 -type f -name '*.zip' | sort > objective-see-zips.txt
+          wc -l objective-see-zips.txt
+
+      - name: Build isolated analyzer image
+        run: |
+          cat > Dockerfile.objective-see <<'DOCKERFILE'
+          FROM python:3.13-slim
+          ENV PYTHONDONTWRITEBYTECODE=1
+          RUN useradd --create-home --uid 10001 analyst
+          WORKDIR /workspace
+          COPY pyproject.toml README.md requirements.txt /workspace/
+          COPY src /workspace/src
+          COPY .github/workflows/scripts/objective_see_macho_corpus.py /workspace/.github/workflows/scripts/objective_see_macho_corpus.py
+          RUN python -m pip install --upgrade pip \
+            && python -m pip install -e . \
+            && python -m pip install pyzipper
+          USER analyst
+          ENTRYPOINT ["python", "/workspace/.github/workflows/scripts/objective_see_macho_corpus.py"]
+          DOCKERFILE
+          docker build --pull -t smda-objective-see-macho .
+
+      - name: Analyze corpus without executing samples
+        run: |
+          mkdir -p objective-see-output
+          chmod 777 objective-see-output
+          objective_see_commit="$(cat objective-see-commit.txt)"
+          docker run --rm \
+            --network none \
+            --cpus 2 \
+            --memory 6g \
+            --pids-limit 256 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=2g \
+            -v "$PWD/objective-see-malware:/samples:ro" \
+            -v "$PWD/objective-see-output:/output:rw" \
+            smda-objective-see-macho \
+            --samples-root /samples \
+            --output-dir /output \
+            --password "$OBJECTIVE_SEE_ZIP_PASSWORD" \
+            --objective-see-commit "$objective_see_commit" \
+            --analysis-timeout 20 \
+            --max-selected 6 \
+            --max-selected-bytes 10485760
+
+      - name: Summarize validation
+        if: always()
+        run: |
+          if [ -f objective-see-output/report.md ]; then
+            cat objective-see-output/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload sanitized validation reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: objective-see-macho-validation-report
+          path: |
+            objective-see-output/report.json
+            objective-see-output/report.md
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload selected XOR fixtures
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: objective-see-selected-xor-fixtures
+          path: objective-see-output/selected_fixtures.tar.gz
+          if-no-files-found: error
+          retention-days: 1
