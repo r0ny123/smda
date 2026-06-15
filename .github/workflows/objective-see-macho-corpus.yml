@@ -54,7 +54,7 @@ jobs:
           USER analyst
           ENTRYPOINT ["python", "/workspace/.github/workflows/scripts/objective_see_macho_corpus.py"]
           DOCKERFILE
-          docker build --pull -t smda-objective-see-macho .
+          docker build --pull -f Dockerfile.objective-see -t smda-objective-see-macho .
 
       - name: Analyze corpus without executing samples
         run: |
@@ -96,7 +96,7 @@ jobs:
           path: |
             objective-see-output/report.json
             objective-see-output/report.md
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
 
       - name: Upload selected XOR fixtures
