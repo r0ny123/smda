@@ -48,10 +48,11 @@ jobs:
             -t smda-malpedia-macho-validation .
 
       - name: Clone Malpedia corpus
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/malpedia_smda_validation -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
         run: |
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/malpedia_smda_validation -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
-            git clone --depth 1 --filter=blob:none --no-checkout \
-              git@malpedia.caad.fkie.fraunhofer.de:malpedia/malpedia.git malpedia
+          git clone --depth 1 --filter=blob:none --no-checkout \
+            git@malpedia.caad.fkie.fraunhofer.de:malpedia/malpedia.git malpedia
           git -C malpedia rev-parse HEAD > malpedia_commit.txt
           git rev-parse HEAD > smda_commit.txt
           git -C malpedia ls-tree -r --name-only HEAD > malpedia_paths.txt
