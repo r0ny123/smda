@@ -50,9 +50,17 @@ jobs:
       - name: Clone Malpedia corpus
         run: |
           GIT_SSH_COMMAND="ssh -i ~/.ssh/malpedia_smda_validation -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
-            git clone --depth 1 git@malpedia.caad.fkie.fraunhofer.de:malpedia/malpedia.git malpedia
+            git clone --depth 1 --filter=blob:none --no-checkout \
+              git@malpedia.caad.fkie.fraunhofer.de:malpedia/malpedia.git malpedia
           git -C malpedia rev-parse HEAD > malpedia_commit.txt
           git rev-parse HEAD > smda_commit.txt
+          git -C malpedia ls-tree -r --name-only HEAD > malpedia_paths.txt
+          python .github/workflows/scripts/select_malpedia_macho_paths.py \
+            malpedia_paths.txt > malpedia_sparse_paths.txt
+          echo "Selected sparse-checkout paths: $(wc -l < malpedia_sparse_paths.txt)"
+          git -C malpedia sparse-checkout init --no-cone
+          cp malpedia_sparse_paths.txt malpedia/.git/info/sparse-checkout
+          git -C malpedia checkout HEAD
 
       - name: Run validation
         run: |
