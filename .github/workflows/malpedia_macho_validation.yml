@@ -66,6 +66,7 @@ jobs:
       - name: Run validation
         run: |
           mkdir -p malpedia_macho_results
+          chmod 777 malpedia_macho_results
           docker run --rm \
             --network none \
             --cap-drop=ALL \

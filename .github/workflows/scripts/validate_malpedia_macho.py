@@ -14,6 +14,7 @@ import signal
 import struct
 import time
 import traceback
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -270,8 +271,9 @@ def analyze_macho(candidate, data, macho_data, macho_kind, slice_info, timeout):
         config.TIMEOUT = timeout
         config.WITH_STRINGS = True
         config.STORE_BUFFER = False
-        report = Disassembler(config).disassembleUnmappedBuffer(macho_data)
-        loader = MemoryFileLoader(macho_data, map_file=True)
+        with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+            report = Disassembler(config).disassembleUnmappedBuffer(macho_data)
+            loader = MemoryFileLoader(macho_data, map_file=True)
         return report, loader
 
     try:
