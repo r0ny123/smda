@@ -1,0 +1,94 @@
+name: Malpedia macOS Mach-O Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate Malpedia macOS Mach-O Corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout SMDA
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure Malpedia SSH
+        run: |
+          test -n "$MALPEDIA_SSH_PRIVATE_KEY"
+          test -n "$MALPEDIA_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$MALPEDIA_SSH_PRIVATE_KEY" > ~/.ssh/malpedia_smda_validation
+          chmod 600 ~/.ssh/malpedia_smda_validation
+          printf '%s\n' "$MALPEDIA_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+        env:
+          MALPEDIA_SSH_PRIVATE_KEY: ${{ secrets.MALPEDIA_SSH_PRIVATE_KEY }}
+          MALPEDIA_SSH_KNOWN_HOSTS: ${{ secrets.MALPEDIA_SSH_KNOWN_HOSTS }}
+
+      - name: Build analysis container
+        run: |
+          docker build \
+            -f .github/workflows/docker/malpedia-macho.Dockerfile \
+            -t smda-malpedia-macho-validation .
+
+      - name: Clone Malpedia corpus
+        run: |
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/malpedia_smda_validation -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            git clone --depth 1 git@malpedia.caad.fkie.fraunhofer.de:malpedia/malpedia.git malpedia
+          git -C malpedia rev-parse HEAD > malpedia_commit.txt
+          git rev-parse HEAD > smda_commit.txt
+
+      - name: Run validation
+        run: |
+          mkdir -p malpedia_macho_results
+          docker run --rm \
+            --network none \
+            --cap-drop=ALL \
+            --security-opt no-new-privileges \
+            --memory 6g \
+            --cpus 2 \
+            --user 10001:10001 \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m \
+            -v "$PWD/malpedia:/corpus:ro" \
+            -v "$PWD/malpedia_macho_results:/out:rw" \
+            smda-malpedia-macho-validation \
+            python .github/workflows/scripts/validate_malpedia_macho.py \
+              /corpus \
+              /out \
+              --malpedia-commit "$(cat malpedia_commit.txt)" \
+              --smda-commit "$(cat smda_commit.txt)" \
+              --select-fixtures
+
+      - name: Publish validation summary
+        if: always()
+        run: |
+          if [ -f malpedia_macho_results/summary.md ]; then
+            cat malpedia_macho_results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload sanitized reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: malpedia-macos-macho-validation
+          path: |
+            malpedia_macho_results/summary.md
+            malpedia_macho_results/results.json
+            malpedia_macho_results/selected_manifest.json
+            malpedia_macho_results/selected_fixtures/*.xored
+          if-no-files-found: warn
+          retention-days: 1
