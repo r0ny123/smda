@@ -1,6 +1,9 @@
 name: Malpedia macOS Mach-O Validation
 
 on:
+  push:
+    branches:
+      - validation/malpedia-macos-macho-corpus
   workflow_dispatch:
 
 permissions:
