@@ -394,8 +394,10 @@ def select_fixtures(results):
         ("largest-under-cap", lambda r: r.get("size", 0)),
     ]
 
-    def add_result(bucket, result):
+    def add_result(bucket, result, allow_family_repeat=False):
         if not result or result["relative_path"] in selected_paths:
+            return
+        if not allow_family_repeat and result.get("family", "") in selected_families:
             return
         if len(selected) >= MAX_FIXTURE_COUNT:
             return
@@ -404,6 +406,18 @@ def select_fixtures(results):
         selected.append(choose_fixture(result, bucket))
         selected_paths.add(result["relative_path"])
         selected_families.add(result.get("family", ""))
+
+    def add_best(bucket, candidates):
+        for result in candidates:
+            before = len(selected)
+            add_result(bucket, result)
+            if len(selected) > before:
+                return
+        for result in candidates:
+            before = len(selected)
+            add_result(bucket, result, allow_family_repeat=True)
+            if len(selected) > before:
+                return
 
     for bucket, predicate in buckets:
         candidates = []
@@ -418,7 +432,7 @@ def select_fixtures(results):
             candidates.sort(key=lambda r: (predicate(r), -r.get("size", 0)), reverse=True)
         else:
             candidates.sort(key=lambda r: (r.get("size", 0), r.get("relative_path", "")))
-        add_result(bucket, candidates[0])
+        add_best(bucket, candidates)
 
     for result in sorted(successes, key=lambda r: (r.get("family", "") in selected_families, r.get("size", 0))):
         add_result("fallback-distinct-family", result)
