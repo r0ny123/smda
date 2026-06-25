@@ -326,10 +326,11 @@ class FunctionAnalysisState:
         if mnemonic != "jmp":
             return False
         op_str = last[3].strip()
-        if not op_str.startswith("0x"):
-            return False
+        # capstone prints branch targets as absolute immediates: hex ("0x..") or
+        # bare decimal for small values incl. "0" (LSN-004). int(_, 0) covers both
+        # and rejects register/memory operands (ValueError).
         try:
-            target = int(op_str, 16)
+            target = int(op_str, 0)
         except ValueError:
             return False
         return target <= last[0]

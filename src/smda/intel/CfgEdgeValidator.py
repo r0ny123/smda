@@ -9,8 +9,6 @@ import capstone
 
 from .definitions import CALL_INS, CJMP_INS, END_INS, JMP_INS, LOOP_INS
 
-_HEX_ADDR = re.compile(r"0x[0-9a-fA-F]+")
-
 
 @dataclass
 class CfgEdgeMismatch:
@@ -63,72 +61,61 @@ class CfgEdgeValidator:
                 targets.add(api_addr)
         return targets
 
-    def _expected_targets(self, addr, mnemonic, op_str):
-        base = self._base_mnemonic(mnemonic)
-        targets = set()
+    def _operand_target(self, addr, op_str):
+        """Resolve a branch/call operand to its absolute target address(es).
 
+        Capstone prints direct targets as a single absolute immediate -- hex
+        ("0x1050") OR bare decimal for small values, including "0" (LSN-004:
+        capstone omits the 0x prefix for address 0). Returns an empty set for
+        indirect transfers (register operand, or a memory operand whose slot
+        cannot be statically resolved)."""
         if op_str.startswith(("dword ptr", "qword ptr", "word ptr", "byte ptr")):
-            if op_str.startswith(("qword ptr [rip", "dword ptr [0x")):
-                slot = self._resolve_memory_target(addr, op_str)
-                if slot is not None:
-                    targets.add(slot)
-                    dereferenced = self._deref_slot(slot)
-                    if dereferenced is not None:
-                        targets.add(dereferenced)
-        elif "0x" in op_str and "[" not in op_str:
-            for match in _HEX_ADDR.findall(op_str):
-                try:
-                    targets.add(int(match, 16))
-                except ValueError:
-                    continue
-
-        if base in CALL_INS:
-            if not targets:
-                stripped = op_str.strip()
-                if stripped.lstrip("-").isdigit():
-                    displacement = int(stripped, 0)
-                    ins_size = self.disassembly.instructions[addr][1]
-                    targets.add(addr + ins_size + displacement)
-            next_addr = addr + self.disassembly.instructions[addr][1]
-            if self._valid_fallthrough(next_addr):
-                targets.add(next_addr)
+            slot = self._resolve_memory_target(addr, op_str)
+            if slot is None:
+                return set()
+            targets = {slot}
+            dereferenced = self._deref_slot(slot)
+            if dereferenced is not None:
+                targets.add(dereferenced)
             return targets
+        stripped = op_str.strip()
+        if not stripped or "[" in stripped:
+            return set()
+        try:
+            return {int(stripped, 0)}
+        except ValueError:
+            return set()
 
-        if base in JMP_INS:
-            if not targets:
-                stripped = op_str.strip()
-                if stripped.lstrip("-").isdigit():
-                    displacement = int(stripped, 0)
-                    ins_size = self.disassembly.instructions[addr][1]
-                    targets.add(addr + ins_size + displacement)
-            return targets
-
-        if base in CJMP_INS or base in LOOP_INS:
-            next_addr = addr + self.disassembly.instructions[addr][1]
-            if self._valid_fallthrough(next_addr):
-                targets.add(next_addr)
-            return targets
-
-        if base in END_INS or base == "hlt":
-            return targets
-
+    def _expected_targets(self, addr, mnemonic, op_str):
+        """Return (expected_targets, verifiable). verifiable is False when a
+        control transfer's target is indirect (register / unresolved memory) and
+        thus the reported taken edge cannot be checked statically."""
+        base = self._base_mnemonic(mnemonic)
         next_addr = addr + self.disassembly.instructions[addr][1]
-        if self._valid_fallthrough(next_addr):
-            targets.add(next_addr)
-        return targets
+        is_branch = base in CALL_INS or base in JMP_INS or base in CJMP_INS or base in LOOP_INS
+        operand_targets = self._operand_target(addr, op_str) if is_branch else set()
+        targets = set(operand_targets)
 
-    def _edges_match(self, addr, expected, reported):
-        if expected == reported:
-            return True
-        if not reported:
-            return not expected
-        if not expected and reported:
+        # call / conditional-jump / loop fall through to the next instruction, as
+        # does any non-control-flow instruction; unconditional jmp and END do not.
+        falls_through = (
+            base in CALL_INS or base in CJMP_INS or base in LOOP_INS or (not is_branch and base not in END_INS)
+        )
+        if falls_through and self._valid_fallthrough(next_addr):
+            targets.add(next_addr)
+
+        verifiable = not (is_branch and not operand_targets)
+        return targets, verifiable
+
+    def _edges_match(self, addr, expected, reported, verifiable):
+        if not verifiable:
+            # indirect transfer target is unknowable statically; cannot flag a mismatch
             return True
         expanded = set(expected)
         expanded.update(self._api_targets_for(addr))
-        if reported.issubset(expanded) or expanded.issubset(reported):
-            return True
-        return reported.intersection(expanded) == reported or reported.intersection(expanded) == expanded
+        # SMDA may legitimately omit implicit fallthrough edges; every edge it DOES
+        # report must be an expected/known target.
+        return reported.issubset(expanded)
 
     def validateFunction(self, function_addr):
         mismatches = []
@@ -140,13 +127,13 @@ class CfgEdgeValidator:
                 if addr not in self.disassembly.instructions:
                     continue
                 base = self._base_mnemonic(mnemonic)
-                expected = self._expected_targets(addr, mnemonic, op_str)
+                expected, verifiable = self._expected_targets(addr, mnemonic, op_str)
                 reported = set(self.disassembly.code_refs_from.get(addr, set()))
                 if base in {"nop", "db"} and not reported:
                     continue
                 if not expected and not reported:
                     continue
-                if self._edges_match(addr, expected, reported):
+                if self._edges_match(addr, expected, reported, verifiable):
                     continue
                 mismatches.append(
                     CfgEdgeMismatch(
