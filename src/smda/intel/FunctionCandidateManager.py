@@ -167,9 +167,9 @@ class FunctionCandidateManager:
         return self._candidate_offsets
 
     def updateFunctionGaps(self):
-        # function_borders are half-open [fmin, fmax); derive gaps per code area with the
-        # same convention used by DisassemblyResult._finalizeCoverageMetrics so that suffix
-        # gaps land on a real boundary and code areas with no recovered function are covered.
+        # function_borders are half-open [fmin, fmax); derive gaps per code area so that
+        # suffix gaps land on a real boundary and code areas with no recovered function
+        # are covered.
         intervals = sorted(self.disassembly.function_borders.values(), key=lambda x: x[0])
         gaps = []
         for area_start, area_end in self._code_areas:

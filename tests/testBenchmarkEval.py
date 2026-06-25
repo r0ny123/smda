@@ -354,6 +354,36 @@ class TestEndToEnd(unittest.TestCase):
             self._make(root, base, pr)
             self.assertEqual(self._run(root, ["--no-gate"]), 0)
 
+    def test_parse_report_tolerates_connected_statistics_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            report_path = Path(d) / "sample.smda"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "execution_time": 1.0,
+                        "oep": 4096,
+                        "statistics": {
+                            "connected_function_count": 2,
+                            "connected_instruction_count": 10,
+                            "rooted_function_count": 2,
+                            "rooted_instruction_count": 10,
+                            "rooted_mode": "seed-closure",
+                        },
+                        "xcfg": {
+                            "4096": {
+                                "blocks": {"4096": [[4096, "c3", "ret", ""]]},
+                                "outrefs": {},
+                                "inrefs": [],
+                                "metadata": {},
+                            }
+                        },
+                    }
+                )
+            )
+            parsed = er.parse_report(report_path)
+            self.assertEqual(parsed["instruction_count"], 1)
+            self.assertEqual(parsed["rooted_instruction_mode"], "seed-closure")
+
     def test_nested_artifact_layout_is_discovered(self):
         # Simulate download-artifact nesting runs under per-artifact subdirs.
         with tempfile.TemporaryDirectory() as d:

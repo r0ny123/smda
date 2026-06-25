@@ -70,9 +70,9 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         assert pe_header.dos_header.magic == 0x5A4D
         assert pe_header.header.machine == 0x14C
         controlled_disassembly = disasm._disassemble(binary_info)
-        assert controlled_disassembly.num_functions == 32
+        assert controlled_disassembly.num_functions == 31
         cutwail_unmapped_disassembly = disasm.disassembleUnmappedBuffer(cutwail_binary)
-        assert cutwail_unmapped_disassembly.num_functions == 32
+        assert cutwail_unmapped_disassembly.num_functions == 31
         assert cutwail_unmapped_disassembly.getFunction(0x4001730).function_name == "original_entry_point"
 
     def testPeExportLabelExtraction(self):
@@ -97,9 +97,9 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         # run FileLoader and disassemble as file
         binary_info = self._create_binary_info(bashlite_binary)
         controlled_disassembly = disasm._disassemble(binary_info)
-        assert controlled_disassembly.num_functions == 174
+        assert controlled_disassembly.num_functions == 176
         bashlite_unmapped_disassembly = disasm.disassembleUnmappedBuffer(bashlite_binary)
-        assert bashlite_unmapped_disassembly.num_functions == 174
+        assert bashlite_unmapped_disassembly.num_functions == 176
         assert len([f.function_name for f in bashlite_unmapped_disassembly.getFunctions() if f.function_name]) == 174
         assert binary_info.abi == "SYSTEMV"
         # test section extraction
@@ -147,7 +147,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         binary_info.oep = binary_info.getOep()
         disasm._disassemble(binary_info)
         komplex_unmapped_disassembly = disasm.disassembleUnmappedBuffer(komplex_binary)
-        self.assertEqual(komplex_unmapped_disassembly.num_functions, 142)
+        self.assertEqual(komplex_unmapped_disassembly.num_functions, 150)
 
     def test_binary_info_and_file_loader_do_not_share_code_areas(self):
         first_binary = BinaryInfo(b"a")
@@ -376,7 +376,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
                 self.assertEqual(report.status, "ok")
                 self.assertEqual(report.architecture, architecture)
                 self.assertEqual(report.bitness, bitness)
-                expected_functions = 135 if bitness == 32 else 130
+                expected_functions = 136 if bitness == 32 else 135
                 self.assertEqual(report.num_functions, expected_functions)
 
 

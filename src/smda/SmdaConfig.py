@@ -53,7 +53,7 @@ class SmdaConfig:
     # maximum number of inbound call references tracked per candidate; 0 == unlimited. Bounds set growth and rescoring.
     MAX_CALL_REFS_PER_CANDIDATE = 2000
     HIGH_ACCURACY = True
-    RESOLVE_TAILCALLS = False
+    RESOLVE_TAILCALLS = True
     # optional metadata generation options
     CALCULATE_SCC = True
     CALCULATE_NESTING = True

@@ -29,6 +29,7 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         binary_info.bitness = 64
         binary_info.architecture = "intel"
         binary_info.code_areas = [(0x1000, 0x1000 + len(buf))]
+        binary_info.oep = 0
         binary_info._callee_addr = callee
         return binary_info
 
@@ -98,6 +99,7 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         binary_info.bitness = 64
         binary_info.architecture = "intel"
         binary_info.code_areas = [(0x1000, 0x1000 + len(buf))]
+        binary_info.oep = 0
         return binary_info, shared
 
     def test_interior_gap_blocks_extend_parent_without_oversplit(self):

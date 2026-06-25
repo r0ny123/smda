@@ -214,13 +214,25 @@ class Disassembler:
             # initDisassembler caches by self.disassembler-is-None, so a backend
             # picked at construction time would otherwise win against autodetect.
             self.disassembler = None
-        binary_info = BinaryInfo(file_content)
-        binary_info.base_addr = base_addr
-        binary_info.bitness = bitness
-        binary_info.is_buffer = True
-        binary_info.code_areas = code_areas
-        binary_info.architecture = architecture
-        binary_info.oep = oep
+        binary_info = None
+        if code_areas is None and bitness is None and oep is None:
+            loader = MemoryFileLoader(file_content, map_file=True)
+            if loader.has_recognized_format() and loader.getData():
+                binary_info = self._populateBinaryInfo(loader)
+                binary_info.is_buffer = True
+                binary_info.oep = binary_info.getOep()
+                if base_addr not in (0, loader.getBaseAddress()):
+                    binary_info.base_addr = base_addr
+        if binary_info is None:
+            binary_info = BinaryInfo(file_content)
+            binary_info.base_addr = base_addr
+            binary_info.bitness = bitness
+            binary_info.is_buffer = True
+            binary_info.code_areas = code_areas
+            binary_info.architecture = architecture
+            binary_info.oep = oep
+        else:
+            binary_info.architecture = architecture
         self.initDisassembler(binary_info.architecture)
         start = datetime.datetime.now(datetime.timezone.utc)
         try:
@@ -248,6 +260,10 @@ class Disassembler:
         self._ensureHashes(binary_info)
         if self.disassembler:
             self.disassembly = self.disassembler.analyzeBuffer(binary_info, self._callbackAnalysisTimeout)
+            if getattr(self.disassembler, "_intelInteriorGapEnabled", lambda: False)():
+                from smda.intel.ReportPolicy import apply_intel_report_policy
+
+                apply_intel_report_policy(self.disassembler)
             return SmdaReport(self.disassembly, config=self.config)
         raise RuntimeError("Disassembler backend not initialized.")
 

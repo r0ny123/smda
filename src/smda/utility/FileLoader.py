@@ -23,6 +23,7 @@ class FileLoader:
         self._file_path = file_path
         self._map_file = map_file
         self._code_areas = []
+        self._recognized_loader = None
         if load_file:
             self._loadFile()
 
@@ -38,6 +39,7 @@ class FileLoader:
         if self._map_file:
             for loader in self.file_loaders:
                 if loader.isCompatible(self._raw_data):
+                    self._recognized_loader = loader
                     # PE/ELF/MachO loaders expose parseBinary() so we can
                     # share a single lief.parse(...) across every accessor
                     # and skip multiple redundant re-parses per binary
@@ -78,3 +80,7 @@ class FileLoader:
 
     def getCodeAreas(self):
         return self._code_areas
+
+    def has_recognized_format(self):
+        """True when map_file load matched a registered file loader."""
+        return self._recognized_loader is not None

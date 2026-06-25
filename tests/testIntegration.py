@@ -62,7 +62,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         cls.cutwail_unmapped_disassembly = disasm.disassembleUnmappedBuffer(cls.cutwail_binary)
 
     def testAsproxDisassemblyCoverage(self):
-        assert len(list(self.asprox_disassembly.getFunctions())) == 104
+        assert len(list(self.asprox_disassembly.getFunctions())) == 98
 
     def testOep(self):
         # PE header from buffers are not parsed, so we don't get header infos
@@ -101,14 +101,15 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         for fn in self.asprox_disassembly.getFunctions():
             num_api_ref_srcs += len(fn.apirefs)
             api_ref_dsts.update(fn.apirefs.values())
-        assert num_api_ref_srcs == 546
-        assert len(api_ref_dsts) == 95
+        assert num_api_ref_srcs == 432
+        assert len(api_ref_dsts) == 82
 
     def testAsproxMarshalling(self):
         report_as_dict = self.asprox_disassembly.toDict()
         assert report_as_dict["status"] == "ok"
         assert report_as_dict["base_addr"] == 0x8D0000
-        assert report_as_dict["statistics"]["num_instructions"] == 15190
+        assert report_as_dict["statistics"]["num_instructions"] == 13603
+        assert report_as_dict["statistics"]["rooted_instruction_count"] == 9693
         assert report_as_dict["sha256"] == "db8a133fed1b706608a4492079b702ded6b70369a980d2b5ae355a6adc78ef00"
         SmdaReport.fromDict(report_as_dict)
 
@@ -116,7 +117,8 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         report_as_dict = self.cutwail_disassembly.toDict()
         assert report_as_dict["status"] == "ok"
         assert report_as_dict["base_addr"] == 0x4000000
-        assert report_as_dict["statistics"]["num_instructions"] == 1633
+        assert report_as_dict["statistics"]["num_instructions"] == 1505
+        assert report_as_dict["statistics"]["connected_function_count"] == 28
         assert report_as_dict["sha256"] == "46686681e2be012ce26219eec1e765f8f2db9fc7a33ca802482050cef189334f"
         # compare our manual file loading with unmapped buffer
         assert self.cutwail_disassembly.num_instructions == self.cutwail_unmapped_disassembly.num_instructions
@@ -168,6 +170,11 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
                 "num_function_calls": 7,
                 "num_failed_functions": 8,
                 "num_failed_instructions": 9,
+                "connected_function_count": 1,
+                "connected_instruction_count": 5,
+                "rooted_function_count": 1,
+                "rooted_instruction_count": 4,
+                "rooted_mode": "seed-closure",
             }
         )
         right = DisassemblyStatistics.fromDict(
@@ -181,14 +188,56 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
                 "num_function_calls": 70,
                 "num_failed_functions": 80,
                 "num_failed_instructions": 90,
+                "connected_function_count": 9,
+                "connected_instruction_count": 45,
+                "rooted_function_count": 8,
+                "rooted_instruction_count": 40,
+                "rooted_mode": "seed-closure",
             }
         )
 
         total = left + right
         self.assertEqual(left.num_functions, 1)
         self.assertEqual(total.num_functions, 11)
+        self.assertEqual(total.connected_function_count, 10)
+        self.assertEqual(total.rooted_instruction_count, 44)
+        self.assertEqual(total.rooted_mode, "seed-closure")
         left += right
         self.assertEqual(left.num_failed_instructions, 99)
+        self.assertEqual(left.rooted_mode, "seed-closure")
+
+    def test_statistics_add_mixed_rooted_mode(self):
+        left = DisassemblyStatistics.fromDict(
+            {
+                "num_functions": 1,
+                "num_recursive_functions": 0,
+                "num_leaf_functions": 0,
+                "num_basic_blocks": 1,
+                "num_instructions": 1,
+                "num_api_calls": 0,
+                "num_function_calls": 0,
+                "num_failed_functions": 0,
+                "num_failed_instructions": 0,
+                "rooted_mode": "seed-closure",
+            }
+        )
+        right = DisassemblyStatistics.fromDict(
+            {
+                "num_functions": 1,
+                "num_recursive_functions": 0,
+                "num_leaf_functions": 0,
+                "num_basic_blocks": 1,
+                "num_instructions": 1,
+                "num_api_calls": 0,
+                "num_function_calls": 0,
+                "num_failed_functions": 0,
+                "num_failed_instructions": 0,
+                "rooted_mode": "xref-closure",
+            }
+        )
+        total = left + right
+        self.assertEqual(total.rooted_mode, "mixed")
+        self.assertEqual(total.toDict()["rooted_mode"], "mixed")
 
 
 if __name__ == "__main__":

@@ -608,7 +608,6 @@ class RecursiveDisassembler:
                     self._recoverPltStubs(cbAnalysisTimeout)
                 if self._gap_budget_remaining():
                     self._recoverUnmappedCodeRefTargets(cbAnalysisTimeout)
-                self._absorbFunctionPaddingBytes()
                 LOGGER.debug("After interior gap recovery, functions: %d", len(self.disassembly.functions))
             if pass_index + 1 < max_passes and hasattr(self.fc_manager, "refreshFunctionGaps"):
                 before = len(self.disassembly.code_map)
@@ -641,45 +640,6 @@ class RecursiveDisassembler:
             if not self._consume_gap_budget():
                 break
             self.analyzeFunction(target)
-
-    def _absorbFunctionPaddingBytes(self):
-        padding = {0x00, 0x90, 0xCC}
-        for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
-            addr = fmax
-            absorbed = []
-            while addr < fmax + 8 and self.disassembly.isAddrWithinMemoryImage(addr):
-                if addr in self.disassembly.code_map or addr in self.disassembly.data_map:
-                    break
-                byte = self.disassembly.getByte(addr)
-                if isinstance(byte, str):
-                    byte = ord(byte)
-                if byte not in padding:
-                    break
-                absorbed.append(addr)
-                addr += 1
-            if not absorbed:
-                continue
-            ins_addr = absorbed[0]
-            ins_size = len(absorbed)
-            mnemonic = (
-                "nop"
-                if all(
-                    (ord(b) if isinstance(b, str) else b) in (0x90, 0xCC)
-                    for b in (self.disassembly.getByte(a) for a in absorbed)
-                )
-                else "db"
-            )
-            self.disassembly.instructions[ins_addr] = (mnemonic, ins_size)
-            for pad_addr in absorbed:
-                self.disassembly.code_map[pad_addr] = ins_addr
-                self.disassembly.ins2fn[pad_addr] = fn_start
-            self.disassembly.function_borders[fn_start] = (fmin, addr)
-            blocks = self.disassembly.functions.get(fn_start)
-            if blocks is not None:
-                blocks[-1].append((ins_addr, ins_size, mnemonic, "", b""))
-                self.disassembly.functions[fn_start] = blocks
-            if hasattr(self.fc_manager, "_borders_dirty"):
-                self.fc_manager._borders_dirty = True
 
     def _intelInteriorGapEnabled(self):
         return getattr(self.backend, "name", "") == "intel"
@@ -828,48 +788,6 @@ class RecursiveDisassembler:
                     state.num_blocks_analyzed,
                 )
 
-    def _mergeInteriorGapFunction(self, child_start):
-        parent_start = self.fc_manager.getContainingFunctionStart(child_start)
-        if parent_start is None:
-            return
-        child_blocks = self.disassembly.functions.pop(child_start, None)
-        if not child_blocks:
-            return
-        self.disassembly.function_borders.pop(child_start, None)
-        self.disassembly.function_symbols.pop(child_start, None)
-        self.disassembly.recursive_functions.discard(child_start)
-        self.disassembly.leaf_functions.discard(child_start)
-        self.disassembly.thunk_functions.discard(child_start)
-
-        ins_by_addr = self._collect_insn_map_for_merge(
-            parent_start,
-            child_start=child_start,
-            extra_blocks=child_blocks,
-        )
-        self._rebuild_merged_function(parent_start, ins_by_addr)
-
-        candidate = self.fc_manager.candidates.get(child_start)
-        if candidate is not None:
-            candidate.setAnalysisAborted("pruned interior gap function")
-
-    def _finalizeCoverageMetrics(self):
-        gaps = []
-        binary_info = self.disassembly.binary_info
-        code_areas = binary_info.code_areas
-        if not code_areas and binary_info.base_addr is not None:
-            code_areas = [(binary_info.base_addr, binary_info.base_addr + binary_info.binary_size)]
-        for area_start, area_end in code_areas or []:
-            prev = area_start
-            for addr in sorted(a for a in self.disassembly.code_map if area_start <= a < area_end):
-                if addr > prev:
-                    gap_len = addr - prev
-                    if gap_len > 1:
-                        gaps.append([prev, addr, gap_len])
-                prev = max(prev, addr + 1)
-            if prev < area_end:
-                gaps.append([prev, area_end, area_end - prev])
-        self.disassembly.unanalyzed_code_gaps = sorted(gaps, key=lambda gap: gap[2], reverse=True)[:32]
-
     def analyzeBuffer(self, binary_info, cbAnalysisTimeout=None):
         LOGGER.debug(
             "Analyzing buffer with %d bytes @0x%08x",
@@ -939,7 +857,6 @@ class RecursiveDisassembler:
                     break
                 self.analyzeFunction(candidate.addr)
         self.disassembly.failed_analysis_addr = self.fc_manager.getAbortedCandidates()
-        self._finalizeCoverageMetrics()
         # package up and finish
         for addr, candidate in self.fc_manager.candidates.items():
             if addr in self.disassembly.functions:
