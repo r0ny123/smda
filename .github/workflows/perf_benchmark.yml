@@ -175,7 +175,9 @@ jobs:
     needs: [fixture_gate, malpedia]
     if: needs.fixture_gate.outputs.password_available == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Artifact download plus parsing six Malpedia report sets can exceed ten
+    # minutes on loaded runners; keep this scoped to aggregation/reporting.
+    timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: write
