@@ -246,6 +246,5 @@ jobs:
         with:
           name: malpedia-evaluation-report
           path: |
-            runtime_measurements/cache/evaluation.html
             runtime_measurements/cache/evaluation.json
             runtime_measurements/cache/evaluation.md

@@ -14,7 +14,7 @@ folders under ``runtime_measurements/``). It then:
     low-noise estimator, reporting a bootstrap confidence interval and a
     Wilcoxon signed-rank test.
 
-Outputs (under ``runtime_measurements/cache/``): ``evaluation.{json,html,md}``.
+Outputs (under ``runtime_measurements/cache/``): ``evaluation.{json,md}``.
 
 Exit codes (gating can be disabled with ``--no-gate`` or ``SMDA_BENCH_GATE=0``):
   0  ok                       1  PR rooted-instruction recall regression vs base
@@ -24,7 +24,6 @@ All statistics are pure-Python (``statistics`` + ``random``); no third-party dep
 """
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -35,22 +34,17 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Make the sibling benchmark helper importable whether run as a script or loaded by tests.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _bench_report_metrics import extract_functions, rooted_instruction_addrs  # noqa: E402
+
 BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 RUNTIME_PATH = BASE_PATH / "runtime_measurements"
 CACHE_PATH = RUNTIME_PATH / "cache"
 
 SCHEMA_VERSION = 3
-CACHE_SCHEMA_VERSION = 3
 INSTRUCTION_RECALL_TOLERANCE = 0.01
-
-
-def compute_file_hash(filepath):
-    """Compute SHA256 hash of a file."""
-    sha256 = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest()
 
 
 def compute_five_num_summary(values):
@@ -68,88 +62,6 @@ def compute_five_num_summary(values):
     }
 
 
-def _parse_int(value):
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        return int(value, 0)
-    return int(value)
-
-
-def _instruction_offset(instruction):
-    if isinstance(instruction, list) and instruction:
-        return _parse_int(instruction[0])
-    if isinstance(instruction, dict):
-        return _parse_int(instruction.get("offset", instruction.get("address")))
-    return None
-
-
-def _iter_instruction_offsets(blocks):
-    iterable = blocks.values() if isinstance(blocks, dict) else blocks
-    for block in iterable:
-        if isinstance(block, dict):
-            instructions = block.get("instructions", block.get("insns", []))
-        elif isinstance(block, list):
-            instructions = block
-        else:
-            instructions = []
-        for instruction in instructions:
-            offset = _instruction_offset(instruction)
-            if offset is not None:
-                yield offset
-
-
-def _rooted_instruction_addrs(data, functions):
-    """Return instruction addresses in the statically evidenced execution component.
-
-    Prefer report-visible seeds (OEP, exports, symbols) plus their function-call
-    closure. Some memory-dump reports have no usable seed in the serialized
-    function set; for those, fall back to xref-rooted functions rather than raw
-    instruction totals so prologue-only/orphan islands do not dominate the gate.
-    """
-    starts = set(functions)
-    base_addr = data.get("base_addr") or 0
-    oep = data.get("oep")
-    oep_values = {
-        candidate for candidate in (oep, base_addr + oep if oep is not None else None) if candidate is not None
-    }
-
-    def has_oep(function):
-        if function["start"] in oep_values:
-            return True
-        return bool(function["insns"] & oep_values)
-
-    def closure(seed_predicate):
-        queue = [start for start, function in functions.items() if seed_predicate(function)]
-        seen = set(queue)
-        for start in queue:
-            for target in functions[start]["outrefs"]:
-                if target in starts and target not in seen:
-                    seen.add(target)
-                    queue.append(target)
-        rooted = set()
-        for start in seen:
-            rooted.update(functions[start]["insns"])
-        return rooted, len(seen)
-
-    rooted, rooted_functions = closure(
-        lambda function: has_oep(function) or bool(function["is_exported"]) or bool(function["function_name"])
-    )
-    if rooted:
-        return rooted, "seed-closure", rooted_functions
-
-    rooted, rooted_functions = closure(lambda function: bool(function["inrefs"]))
-    if rooted:
-        return rooted, "xref-closure", rooted_functions
-
-    all_insns = set()
-    for function in functions.values():
-        all_insns.update(function["insns"])
-    return all_insns, "all-instructions", len(functions)
-
-
 def parse_report(filepath):
     """Parse a single SMDA JSON report and extract precomputed values.
 
@@ -162,71 +74,22 @@ def parse_report(filepath):
         data = json.load(f)
 
     xcfg = data.get("xcfg", {})
-    total_blocks = 0
-    block_counts = {}
-    instruction_addrs = set()
-    functions = {}
-    function_starts = {_parse_int(addr) for addr in xcfg}
-    for addr, func_data in xcfg.items():
-        function_start = _parse_int(addr)
-        blocks = func_data.get("blocks", [])
-        num_blocks = len(blocks)
-        block_counts[addr] = num_blocks
-        total_blocks += num_blocks
-        function_insns = set(_iter_instruction_offsets(blocks))
-        instruction_addrs.update(function_insns)
-
-        outrefs = set()
-        for targets in func_data.get("outrefs", {}).values():
-            for target in targets:
-                target_addr = _parse_int(target)
-                if target_addr in function_starts:
-                    outrefs.add(target_addr)
-
-        functions[function_start] = {
-            "start": function_start,
-            "insns": function_insns,
-            "outrefs": outrefs,
-            "inrefs": func_data.get("inrefs", []),
-            "is_exported": func_data.get("is_exported", False),
-            "function_name": func_data.get("metadata", {}).get("function_name", ""),
-        }
-
-    rooted_instruction_addrs, rooted_mode, rooted_functions = _rooted_instruction_addrs(data, functions)
-
-    exec_time = data.get("execution_time", 0)
+    functions, instruction_addrs = extract_functions(xcfg)
+    block_counts = {addr: len(func_data.get("blocks", [])) for addr, func_data in xcfg.items()}
+    rooted_addrs, rooted_mode, rooted_functions = rooted_instruction_addrs(data, functions)
 
     return {
-        "cache_schema_version": CACHE_SCHEMA_VERSION,
         "function_count": len(block_counts),
         "block_counts": block_counts,
-        "total_blocks": total_blocks,
+        "total_blocks": sum(block_counts.values()),
         "instruction_count": len(instruction_addrs),
         "instruction_addrs": sorted(instruction_addrs),
-        "rooted_instruction_count": len(rooted_instruction_addrs),
-        "rooted_instruction_addrs": sorted(rooted_instruction_addrs),
+        "rooted_instruction_count": len(rooted_addrs),
+        "rooted_instruction_addrs": sorted(rooted_addrs),
         "rooted_instruction_mode": rooted_mode,
         "rooted_function_count": rooted_functions,
-        "execution_time": exec_time,
-        "file_hash": compute_file_hash(filepath),
+        "execution_time": data.get("execution_time", 0),
     }
-
-
-def get_cache_key(folder_name):
-    """Generate cache file path for a folder."""
-    return CACHE_PATH / folder_name / "cache.json"
-
-
-def load_from_cache(folder_name):
-    """Load precomputed data from cache if valid (local-iteration speedup; inert in CI)."""
-    cache_file = get_cache_key(folder_name)
-    if cache_file.exists():
-        try:
-            with open(cache_file) as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-    return None
 
 
 _RUN_DIR_RE = re.compile(r"^(base|pr)_\d+$")
@@ -250,40 +113,9 @@ def discover_run_folders(runtime_path):
     return found
 
 
-def cache_reports(folder_path):
-    """Parse (and cache) all .smda reports for a folder.
-
-    Returns ``{filename: parsed_report}``. The on-disk cache is keyed on file
-    hashes; it speeds up local re-runs but is inert in ephemeral CI (fresh tree
-    each run).
-    """
-    folder_name = folder_path.name
-    cache_file = get_cache_key(folder_name)
-
-    cached = load_from_cache(folder_name)
-    if cached is not None:
-        all_valid = True
-        for filename, cached_info in cached.items():
-            filepath = folder_path / filename
-            if (
-                not filepath.exists()
-                or compute_file_hash(filepath) != cached_info.get("file_hash", "")
-                or cached_info.get("cache_schema_version") != CACHE_SCHEMA_VERSION
-            ):
-                all_valid = False
-                break
-        if all_valid:
-            return cached
-
-    cache_data = {}
-    for json_file in folder_path.glob("*.smda"):
-        cache_data[json_file.name] = parse_report(json_file)
-
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_file, "w") as f:
-        json.dump(cache_data, f, indent=2)
-
-    return cache_data
+def parse_folder_reports(folder_path):
+    """Parse every ``.smda`` report in a run folder -> ``{filename: parsed_report}``."""
+    return {json_file.name: parse_report(json_file) for json_file in folder_path.glob("*.smda")}
 
 
 # --------------------------------------------------------------------------- #
@@ -453,46 +285,6 @@ def build_paired(base_agg, pr_agg, instruction_tolerance=INSTRUCTION_RECALL_TOLE
         "degenerate": degenerate,
         "block_drift": block_drift,
     }
-
-
-def build_pairwise_matrix(base_caches, pr_caches):
-    """Compare every PR run against every base run for reviewer-visible context.
-
-    This does not drive the gate. It shows whether the headline min-of-runs
-    result is representative across the individual run combinations.
-    """
-    rows = []
-    for pr_name in sorted(pr_caches):
-        pr_reports = pr_caches[pr_name]
-        for base_name in sorted(base_caches):
-            base_reports = base_caches[base_name]
-            common = sorted(set(pr_reports) & set(base_reports))
-            pr_times = [float(pr_reports[f].get("execution_time", 0) or 0) for f in common]
-            base_times = [float(base_reports[f].get("execution_time", 0) or 0) for f in common]
-            function_set_matches = sum(
-                set(pr_reports[f].get("block_counts", {})) == set(base_reports[f].get("block_counts", {}))
-                for f in common
-            )
-            median_pr = statistics.median(pr_times) if pr_times else 0.0
-            median_base = statistics.median(base_times) if base_times else 0.0
-            median_diff = median_pr - median_base
-            speedup_pct = ((median_base - median_pr) / median_base * 100.0) if median_base > 0 else 0.0
-            rows.append(
-                {
-                    "comparison": f"{pr_name} vs {base_name}",
-                    "pr_files": len(pr_reports),
-                    "base_files": len(base_reports),
-                    "common_files": len(common),
-                    "function_set_matches": function_set_matches,
-                    "median_pr_time": median_pr,
-                    "median_base_time": median_base,
-                    "median_diff": median_diff,
-                    "speedup_pct": speedup_pct,
-                    "only_in_pr": len(set(pr_reports) - set(base_reports)),
-                    "only_in_base": len(set(base_reports) - set(pr_reports)),
-                }
-            )
-    return rows
 
 
 def bootstrap_ci(values, statistic, n_resamples=10000, confidence=0.95, seed=12345):
@@ -685,7 +477,6 @@ def generate_markdown_report(model, output_path):
     det = model["determinism"]
     base_s = perf["base_summary"]
     pr_s = perf["pr_summary"]
-    pairwise = perf.get("pairwise_runs", [])
     block_drift = perf.get("block_drift", [])
     wil = paired["wilcoxon"]
 
@@ -758,29 +549,6 @@ def generate_markdown_report(model, output_path):
         f"{'✅' if det['pr']['is_deterministic'] else '❌'} | {det['pr']['median_timing_cv'] * 100:.1f}% |",
         "",
     ]
-
-    if pairwise:
-        lines += [
-            "<details>",
-            "<summary>Pairwise run matrix (individual run medians, diagnostic)</summary>",
-            "",
-            "Diagnostic only: each row compares one raw PR run against one raw base run. "
-            "The headline verdict above uses paired per-file best-of-runs timings.",
-            "",
-            "| Comparison Run | PR Files | Base Files | Common | Function Set Matches | Med PR (s) | Med Base (s) | Med Diff (s) | Speedup % |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-        ]
-        for row in pairwise:
-            lines.append(
-                f"| {row['comparison']} | {row['pr_files']} | {row['base_files']} | {row['common_files']} | "
-                f"{row['function_set_matches']}/{row['common_files']} | {row['median_pr_time']:.4f}s | "
-                f"{row['median_base_time']:.4f}s | {row['median_diff']:+.4f}s | {row['speedup_pct']:+.2f}% |"
-            )
-        lines += [
-            "",
-            "</details>",
-            "",
-        ]
 
     if corr.get("instruction_regressions"):
         lines.append("#### ⚠️ Rooted Instruction Recall Regressions (PR vs base)")
@@ -857,105 +625,6 @@ def generate_markdown_report(model, output_path):
     return output_path
 
 
-def generate_html_report(model, output_path):
-    """Render a styled standalone HTML report (uploaded as an artifact)."""
-    perf = model["performance"]
-    paired = perf["paired"]
-    corr = model["correctness"]
-    det = model["determinism"]
-    base_s = perf["base_summary"]
-    pr_s = perf["pr_summary"]
-    wil = paired["wilcoxon"]
-
-    def card(title, value):
-        return (
-            f'            <div class="stat-card">\n'
-            f"                <h4>{title}</h4>\n"
-            f'                <div class="stat-value">{value}</div>\n'
-            f"            </div>\n"
-        )
-
-    corr_ok = corr["pass"]
-    p_text = "n/a" if wil.get("p_value") is None else f"{wil['p_value']:.4f}"
-
-    html = (
-        """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SMDA Runtime Efficiency Evaluation</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #f5f5f5; }
-        h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
-        h2 { color: #555; margin-top: 30px; }
-        .summary { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .summary h3 { margin-top: 0; color: #4CAF50; }
-        .stats { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 20px; }
-        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-width: 200px; }
-        .stat-card h4 { margin: 0 0 10px 0; color: #666; font-size: 14px; text-transform: uppercase; }
-        .stat-value { font-size: 24px; font-weight: bold; color: #333; }
-        .pass { color: #2e7d32; } .fail { color: #d32f2f; }
-        .footer { margin-top: 40px; color: #888; font-size: 14px; text-align: center; }
-    </style>
-</head>
-<body>
-    <h1>SMDA Runtime Efficiency Evaluation</h1>
-    <p>Generated: """
-        + model["generated"]
-        + """</p>
-"""
-    )
-
-    if not corr_ok or not det["base"]["is_deterministic"] or not det["pr"]["is_deterministic"]:
-        issues = []
-        if not corr_ok:
-            issues.append(f"{len(corr['instruction_regressions'])} rooted-instruction recall regression(s)")
-        for side in ("base", "pr"):
-            if not det[side]["is_deterministic"]:
-                issues.append(f"{side} non-determinism ({len(det[side]['files_disagreeing'])} files)")
-        html += f'    <div class="summary"><h3 class="fail">⚠️ Issues: {"; ".join(issues)}</h3></div>\n'
-
-    html += '    <div class="summary">\n        <h3>Correctness & Performance</h3>\n        <div class="stats">\n'
-    html += card("Correctness", '<span class="pass">PASS</span>' if corr_ok else '<span class="fail">FAIL</span>')
-    html += card("Common Files", corr["n_common"])
-    html += card("Rooted Instruction Regressions", len(corr["instruction_regressions"]))
-    html += card("Function-set Drift (info)", len(corr.get("function_set_drift", [])))
-    html += card("Median Paired Speedup", f"{paired['median_speedup']:+.2f}%")
-    html += card("Median Paired Speedup 95% CI", f"[{paired['ci_median'][0]:+.2f}%, {paired['ci_median'][1]:+.2f}%]")
-    html += card("Wilcoxon p", p_text)
-    html += card("Timing Noise Band", f"±{paired.get('noise_floor_pct', 0.0):.1f}%")
-    html += card("Block-count Drift (info)", len(perf.get("block_drift", [])))
-    html += card("Verdict", paired["verdict"])
-    html += "        </div>\n    </div>\n"
-
-    html += '    <div class="summary">\n        <h3>Per-side Timing Context (best run per file)</h3>\n        <div class="stats">\n'
-    html += card("base Files", base_s["files"])
-    html += card("pr Files", pr_s["files"])
-    html += card("Median base best time/file", f"{base_s['median_time']:.4f}s")
-    html += card("Median pr best time/file", f"{pr_s['median_time']:.4f}s")
-    html += card("base Func/s estimate", f"~{base_s['functions_per_sec']:.0f}")
-    html += card("pr Func/s estimate", f"~{pr_s['functions_per_sec']:.0f}")
-    html += "        </div>\n    </div>\n"
-
-    html += '    <div class="summary">\n        <h3>Determinism</h3>\n        <div class="stats">\n'
-    for side in ("base", "pr"):
-        d = det[side]
-        ok = "✅" if d["is_deterministic"] else "❌"
-        html += card(f"{side} ({d['runs']} runs)", f"{ok} CV {d['median_timing_cv'] * 100:.1f}%")
-    html += "        </div>\n    </div>\n"
-
-    html += (
-        '    <p class="footer">Evaluation script: evaluate_runtime.py | Runtime measurements: '
-        + str(RUNTIME_PATH)
-        + "</p>\n</body>\n</html>\n"
-    )
-
-    with open(output_path, "w") as f:
-        f.write(html)
-    return output_path
-
-
 def write_json_report(model, output_path):
     """Machine-readable report (schema-versioned)."""
     with open(output_path, "w") as f:
@@ -1000,8 +669,8 @@ def evaluate(runtime_path):
             "no_data",
         )
 
-    base_caches = {n: cache_reports(run_folders[n]) for n in base_folders}
-    pr_caches = {n: cache_reports(run_folders[n]) for n in pr_folders}
+    base_caches = {n: parse_folder_reports(run_folders[n]) for n in base_folders}
+    pr_caches = {n: parse_folder_reports(run_folders[n]) for n in pr_folders}
 
     base_agg, base_meta = aggregate_runs(base_caches)
     pr_agg, pr_meta = aggregate_runs(pr_caches)
@@ -1035,7 +704,6 @@ def evaluate(runtime_path):
             "base_summary": side_summary(base_agg),
             "pr_summary": side_summary(pr_agg),
             "paired": paired_stats,
-            "pairwise_runs": build_pairwise_matrix(base_caches, pr_caches),
             "degenerate_files": paired["degenerate"],
             "block_drift": paired["block_drift"],
         },
@@ -1084,10 +752,6 @@ def main(argv=None):
                 "### 📊 SMDA Performance Evaluation Benchmark Results\n\n"
                 f"_No comparable data: {model.get('reason')}._\n"
             )
-        with open(cache_path / "evaluation.html", "w") as f:
-            f.write(
-                f"<html><body><h1>SMDA Evaluation</h1><p>No comparable data: {model.get('reason')}</p></body></html>"
-            )
         if gate and args.require_data:
             print("FAIL: no comparable data (--require-data)")
             return 3
@@ -1111,7 +775,6 @@ def main(argv=None):
     model["gate"] = {"enabled": gate, "failed": exit_code != 0, "exit_code": exit_code, "reasons": reasons}
 
     write_json_report(model, cache_path / "evaluation.json")
-    generate_html_report(model, cache_path / "evaluation.html")
     generate_markdown_report(model, cache_path / "evaluation.md")
     print(f"Reports written to {cache_path}")
 
