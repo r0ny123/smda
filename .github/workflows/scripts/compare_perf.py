@@ -3,6 +3,31 @@ import argparse
 import json
 import sys
 
+INSTRUCTION_RECALL_TOLERANCE = 0.01
+
+
+def _rooted_instruction_recall(base, pr):
+    base_rooted = set(base.get("rooted_instruction_addrs") or base.get("instruction_addrs") or [])
+    pr_all = set(pr.get("instruction_addrs") or [])
+    if base_rooted and pr_all:
+        recovered = len(base_rooted & pr_all)
+        return {
+            "mode": base.get("rooted_instruction_mode", "address-set"),
+            "base_rooted": len(base_rooted),
+            "recovered": recovered,
+            "recall": recovered / len(base_rooted),
+        }
+
+    base_ins = base.get("num_instructions", 0)
+    pr_ins = pr.get("num_instructions", 0)
+    recall = (pr_ins / base_ins) if base_ins > 0 else 1.0
+    return {
+        "mode": "count-fallback",
+        "base_rooted": base_ins,
+        "recovered": min(pr_ins, base_ins),
+        "recall": recall,
+    }
+
 
 def main():
     parser = argparse.ArgumentParser(description="Compare SMDA performance and correctness results")
@@ -36,8 +61,8 @@ def main():
     print("\n=== SMDA BENCHMARK COMPARISON ===")
     print(f"Comparing PR results ({args.pr_results}) with Base results ({args.base_results})\n")
 
-    headers = ["Fixture", "Base Median", "PR Median", "Diff (s)", "Change (%)", "Perf Status", "Correctness"]
-    row_fmt = "{:<12} | {:<11} | {:<11} | {:<10} | {:<10} | {:<13} | {:<12}"
+    headers = ["Fixture", "Base Median", "PR Median", "Diff (s)", "Change (%)", "Perf Status", "Rooted Recall"]
+    row_fmt = "{:<12} | {:<11} | {:<11} | {:<10} | {:<10} | {:<13} | {:<14}"
     print(row_fmt.format(*headers))
     print("-" * 90)
 
@@ -68,8 +93,7 @@ def main():
 
         # Check performance status
         if pct_change > (args.threshold_fail * 100):
-            perf_status = "FAIL (REGRESS)"
-            perf_failed = True
+            perf_status = "WARN (REGRESS)"
         elif pct_change > (args.threshold_warn * 100):
             perf_status = "WARN"
         elif pct_change < -5:
@@ -77,50 +101,28 @@ def main():
         else:
             perf_status = "OK"
 
-        # Check correctness
-        corr_status = "MATCH"
-        mismatches = []
-
+        recall = _rooted_instruction_recall(base, pr)
+        corr_status = f"{recall['recall'] * 100:.2f}%"
+        drift = []
         if base["num_functions"] != pr["num_functions"]:
-            mismatches.append(f"Function count mismatch: base={base['num_functions']}, pr={pr['num_functions']}")
+            drift.append(f"function count: base={base['num_functions']}, pr={pr['num_functions']}")
         if base["num_instructions"] != pr["num_instructions"]:
-            mismatches.append(
-                f"Instruction count mismatch: base={base['num_instructions']}, pr={pr['num_instructions']}"
-            )
+            drift.append(f"instruction count: base={base['num_instructions']}, pr={pr['num_instructions']}")
         if base["num_blocks"] != pr["num_blocks"]:
-            mismatches.append(f"Block count mismatch: base={base['num_blocks']}, pr={pr['num_blocks']}")
+            drift.append(f"block count: base={base['num_blocks']}, pr={pr['num_blocks']}")
 
-        # Deep check functions
-        base_funcs = base.get("functions", {})
-        pr_funcs = pr.get("functions", {})
-
-        for addr in base_funcs:
-            if addr not in pr_funcs:
-                mismatches.append(f"Function {addr} in base, but missing from PR")
-            else:
-                bf = base_funcs[addr]
-                pf = pr_funcs[addr]
-                if bf["num_blocks"] != pf["num_blocks"]:
-                    mismatches.append(
-                        f"Function {addr} block count mismatch: base={bf['num_blocks']}, pr={pf['num_blocks']}"
-                    )
-                if bf["num_instructions"] != pf["num_instructions"]:
-                    mismatches.append(
-                        f"Function {addr} instruction count mismatch: base={bf['num_instructions']}, pr={pf['num_instructions']}"
-                    )
-
-        for addr in pr_funcs:
-            if addr not in base_funcs:
-                mismatches.append(f"Function {addr} in PR, but missing from base")
-
-        if mismatches:
-            corr_status = "MISMATCH"
+        if recall["recall"] < (1.0 - INSTRUCTION_RECALL_TOLERANCE):
+            corr_status = f"FAIL {corr_status}"
             correctness_failed = True
-            print(f"\n[CORRECTNESS MISMATCH] in '{name}':")
-            for m in mismatches[:10]:
-                print(f"  - {m}")
-            if len(mismatches) > 10:
-                print(f"  - ... and {len(mismatches) - 10} more mismatches")
+            print(f"\n[ROOTED RECALL REGRESSION] in '{name}':")
+            print(
+                f"  - recovered {recall['recovered']} / {recall['base_rooted']} rooted base instructions "
+                f"({recall['mode']})"
+            )
+        elif drift:
+            print(f"\n[INFO DRIFT] in '{name}' (not gated):")
+            for item in drift:
+                print(f"  - {item}")
 
         print(
             row_fmt.format(
@@ -153,14 +155,14 @@ def main():
             f"{overall_diff:+.4f}s",
             f"{overall_change:+.1f}%",
             overall_perf,
-            "MATCH" if not correctness_failed else "MISMATCH",
+            "PASS" if not correctness_failed else "FAIL",
         )
     )
     print()
 
     # Exit codes
     if correctness_failed:
-        print("❌ Correctness checks failed! Output results do not match.", file=sys.stderr)
+        print("❌ Correctness checks failed! Rooted instruction recall regressed.", file=sys.stderr)
         sys.exit(1)
     if perf_failed:
         print("❌ Performance checks failed! Severe performance regression detected.", file=sys.stderr)

@@ -197,7 +197,7 @@ jobs:
           merge-multiple: true
           path: runtime_measurements
 
-      # evaluate_runtime.py exits non-zero on a correctness regression (1) or
+      # evaluate_runtime.py exits non-zero on an instruction-recall regression (1) or
       # base/PR non-determinism (2); that failure gates CI. The reporting steps
       # below run regardless so the verdict is always published.
       - name: Evaluate Malpedia Runtime

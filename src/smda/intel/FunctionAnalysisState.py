@@ -46,6 +46,7 @@ class FunctionAnalysisState:
         self.is_recursive = False
         self.is_thunk_call = False
         self.label = ""
+        self._gap_trusted = False
 
     def chooseNextBlock(self):
         self.is_block_ending_instruction = False
@@ -155,7 +156,7 @@ class FunctionAnalysisState:
         if self.is_thunk_call:
             self.disassembly.thunk_functions.add(self.start_addr)
 
-    def finalizeAnalysis(self, as_gap=False):
+    def finalizeAnalysis(self, as_gap=False, extend_into_parent=False):
         if as_gap:
             LOGGER.debug(
                 "0x%08x had sanity state: %s (%d ins, blocks: %d)",
@@ -166,7 +167,10 @@ class FunctionAnalysisState:
             )
             # for instruction in sorted(self.instructions):
             #    print("0x%08x: %s %s" % (instruction[0], instruction[2], instruction[3]))
-        if as_gap and not self.is_sanely_ending:
+        strict_gap_promotion = getattr(self.disassembly.binary_info, "architecture", "") == "intel"
+        if strict_gap_promotion and as_gap and not extend_into_parent and not self._gap_trusted:
+            return False
+        if as_gap and not extend_into_parent and not self.is_sanely_ending:
             if len(self.instructions) == 1 and self.instructions[0][2] == "jmp":
                 byte = self.disassembly.getByte(self.instructions[0][0])
                 if isinstance(byte, int):
@@ -180,10 +184,12 @@ class FunctionAnalysisState:
             ]:
                 # similar case to the one above, mostly stubs with tailcalls to a function or shared tail block.
                 pass
+            elif self._gap_trusted or self._hasAcceptableGapStructure() or self._endsWithControlFlowBackEdge():
+                pass
             else:
                 return False
         # in case we have a successful analysis, forward results to disassembly
-        if self.num_blocks_analyzed:
+        if self.num_blocks_analyzed and not extend_into_parent:
             self._finalizeRegularAnalysis()
         return True
 
@@ -285,6 +291,48 @@ class FunctionAnalysisState:
 
     def setSanelyEnding(self, is_sanely_ending):
         self.is_sanely_ending = is_sanely_ending
+
+    def setGapCandidateContext(self, candidate):
+        if candidate is not None:
+            self._gap_trusted = candidate.bypassesGapSanityCheck()
+
+    def _hasAcceptableGapStructure(self):
+        if self.suspicious_ins_count or self.has_collision or self.num_blocks_analyzed < 2:
+            return False
+        if self._isInteriorGapWithoutExternalEntry():
+            return False
+        from .FunctionCandidate import FunctionCandidate
+
+        return FunctionCandidate(self.disassembly.binary_info, self.start_addr).hasCommonFunctionStart()
+
+    def _isInteriorGapWithoutExternalEntry(self):
+        if self.start_addr not in self.disassembly.code_map:
+            return False
+        for fn_start, (fmin, fmax) in self.disassembly.function_borders.items():
+            if fn_start == self.start_addr:
+                continue
+            if fmin <= self.start_addr < fmax:
+                for ref_from in self.disassembly.code_refs_to.get(self.start_addr, set()):
+                    if ref_from < fmin or ref_from >= fmax:
+                        return False
+                return True
+        return False
+
+    def _endsWithControlFlowBackEdge(self):
+        if not self.instructions:
+            return False
+        last = self.instructions[-1]
+        mnemonic = last[2].split(" ")[-1]
+        if mnemonic != "jmp":
+            return False
+        op_str = last[3].strip()
+        if not op_str.startswith("0x"):
+            return False
+        try:
+            target = int(op_str, 16)
+        except ValueError:
+            return False
+        return target <= last[0]
 
     def addCollision(self, colliding_address):
         self.has_collision = True

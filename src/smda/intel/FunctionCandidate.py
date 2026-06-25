@@ -73,6 +73,18 @@ class FunctionCandidate:
                 return True
         return False
 
+    def bypassesAlignmentFilter(self):
+        """High-confidence starts should not be dropped when alignment inference is strict."""
+        if self.is_symbol or self.is_exception_handler:
+            return True
+        if self.lang_spec is not None:
+            return True
+        return bool(self.is_initial_candidate and self.call_ref_sources)
+
+    def bypassesGapSanityCheck(self):
+        """Trusted candidates may legitimately lack a ret/tailcall ending (e.g. malware loops)."""
+        return self.is_symbol or self.is_exception_handler or bool(self.call_ref_sources)
+
     def getFunctionStartScore(self):
         if self.function_start_score is None:
             for length in _COMMON_PROLOGUE_LENGTHS:

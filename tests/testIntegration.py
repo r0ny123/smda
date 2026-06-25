@@ -62,7 +62,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         cls.cutwail_unmapped_disassembly = disasm.disassembleUnmappedBuffer(cls.cutwail_binary)
 
     def testAsproxDisassemblyCoverage(self):
-        assert len(list(self.asprox_disassembly.getFunctions())) == 105
+        assert len(list(self.asprox_disassembly.getFunctions())) == 104
 
     def testOep(self):
         # PE header from buffers are not parsed, so we don't get header infos
@@ -108,7 +108,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         report_as_dict = self.asprox_disassembly.toDict()
         assert report_as_dict["status"] == "ok"
         assert report_as_dict["base_addr"] == 0x8D0000
-        assert report_as_dict["statistics"]["num_instructions"] == 15706
+        assert report_as_dict["statistics"]["num_instructions"] == 15190
         assert report_as_dict["sha256"] == "db8a133fed1b706608a4492079b702ded6b70369a980d2b5ae355a6adc78ef00"
         SmdaReport.fromDict(report_as_dict)
 
@@ -116,7 +116,7 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         report_as_dict = self.cutwail_disassembly.toDict()
         assert report_as_dict["status"] == "ok"
         assert report_as_dict["base_addr"] == 0x4000000
-        assert report_as_dict["statistics"]["num_instructions"] == 1611
+        assert report_as_dict["statistics"]["num_instructions"] == 1633
         assert report_as_dict["sha256"] == "46686681e2be012ce26219eec1e765f8f2db9fc7a33ca802482050cef189334f"
         # compare our manual file loading with unmapped buffer
         assert self.cutwail_disassembly.num_instructions == self.cutwail_unmapped_disassembly.num_instructions

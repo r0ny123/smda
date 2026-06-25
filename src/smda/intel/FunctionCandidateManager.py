@@ -1,3 +1,4 @@
+import bisect
 import logging
 import re
 import struct
@@ -38,14 +39,27 @@ class FunctionCandidateManager:
         self.max_function_addr = 0
         self.gap_pointer = None
         self.previously_analyzed_gap = 0
+        self._gap_attempted_addrs = set()
         self.capstone = None
         # backstop against memory usage explosion during candidate identification
         self._candidate_cap_logged = False
         self._cb_analysis_timeout = None
+        self._borders_dirty = True
+        self._cached_borders = None
+        self._cached_borders_starts = []
+        self._max_fn_len = 0
+        self._code_area_starts = []
+        self._code_area_ends = []
 
     def init(self, disassembly, cbAnalysisTimeout=None):
         if disassembly.binary_info.code_areas:
-            self._code_areas = disassembly.binary_info.code_areas
+            self._code_areas = sorted(disassembly.binary_info.code_areas, key=lambda x: x[0])
+            self._code_area_starts = [a[0] for a in self._code_areas]
+            self._code_area_ends = [a[1] for a in self._code_areas]
+        else:
+            self._code_areas = []
+            self._code_area_starts = []
+            self._code_area_ends = []
         self.disassembly = disassembly
         self._cb_analysis_timeout = cbAnalysisTimeout
         self.lang_analyzer = LanguageAnalyzer(disassembly)
@@ -62,7 +76,8 @@ class FunctionCandidateManager:
         if addr is None:
             return False
         if self._code_areas:
-            return any(area[0] <= addr < area[1] for area in self._code_areas)
+            idx = bisect.bisect_right(self._code_area_starts, addr) - 1
+            return idx >= 0 and addr < self._code_area_ends[idx]
         return True
 
     def getBitMask(self):
@@ -103,10 +118,12 @@ class FunctionCandidateManager:
         if self.config.HIGH_ACCURACY:
             conflicts = state.identifyCallConflicts(self._all_call_refs)
             if conflicts:
+                use_bracket = getattr(self.config, "CANDIDATE_QUEUE", "") == "BracketQueue"
                 for candidate_addr, conflict in conflicts.items():
                     self.candidates[candidate_addr].removeCallRefs(conflict)
                     # depending on implementation, update candidates individually
-                    self.candidate_queue.update(self.candidates[candidate_addr])
+                    if use_bracket:
+                        self.candidate_queue.update(self.candidates[candidate_addr])
                 self.candidate_queue.update()
 
     def _addCappedCallRef(self, candidate, source_ref):
@@ -131,11 +148,18 @@ class FunctionCandidateManager:
         self.candidate_queue.update()
 
     def getNextFunctionStartCandidate(self):
+        strict_gap_promotion = getattr(self.disassembly.binary_info, "architecture", "") == "intel"
         for candidate in self.candidate_queue:
             if not (candidate.isFinished() or candidate.getScore() == 0):
+                if strict_gap_promotion and candidate.is_gap_candidate and not candidate.bypassesGapSanityCheck():
+                    continue
                 if self.language_candidates_only and candidate.lang_spec is None:
                     continue
-                if self.identified_alignment and candidate.alignment < self.identified_alignment:
+                if (
+                    self.identified_alignment
+                    and candidate.alignment < self.identified_alignment
+                    and not candidate.bypassesAlignmentFilter()
+                ):
                     continue
                 yield candidate
 
@@ -143,19 +167,33 @@ class FunctionCandidateManager:
         return self._candidate_offsets
 
     def updateFunctionGaps(self):
+        # function_borders are half-open [fmin, fmax); derive gaps per code area with the
+        # same convention used by DisassemblyResult._finalizeCoverageMetrics so that suffix
+        # gaps land on a real boundary and code areas with no recovered function are covered.
+        intervals = sorted(self.disassembly.function_borders.values(), key=lambda x: x[0])
         gaps = []
-        prev_ins = 0
-        min_code = min(self.disassembly.code_map) if self.disassembly.code_map else self.getBitMask()
-        max_code = max(self.disassembly.code_map) if self.disassembly.code_map else 0
-        for code_area in self._code_areas:
-            if code_area[0] < min_code < code_area[1] and min_code != code_area[0]:
-                gaps.append([code_area[0], min_code, min_code - code_area[0]])
-            if code_area[0] < max_code < code_area[1] and max_code != code_area[1]:
-                gaps.append([max_code, code_area[1], code_area[1] - max_code])
-        for ins in sorted(self.disassembly.code_map.keys()):
-            if prev_ins != 0 and ins - prev_ins > 1:
-                gaps.append([prev_ins + 1, ins, ins - prev_ins])
-            prev_ins = ins
+        for area_start, area_end in self._code_areas:
+            clipped = []
+            for fmin, fmax in intervals:
+                start = max(fmin, area_start)
+                end = min(fmax, area_end)
+                if start < end:
+                    clipped.append((start, end))
+
+            merged = []
+            for start, end in clipped:
+                if not merged or merged[-1][1] < start:
+                    merged.append([start, end])
+                else:
+                    merged[-1][1] = max(merged[-1][1], end)
+
+            cursor = area_start
+            for start, end in merged:
+                if cursor < start:
+                    gaps.append([cursor, start, start - cursor])
+                cursor = max(cursor, end)
+            if cursor < area_end:
+                gaps.append([cursor, area_end, area_end - cursor])
         self.function_gaps = sorted(gaps)
 
     def initGapSearch(self):
@@ -314,18 +352,28 @@ class FunctionCandidateManager:
             # we may have a candidate here
             LOGGER.debug("nextGapCandidate() using 0x%08x as candidate", self.gap_pointer)
             start_byte = byte[0] if byte else 0
-            has_common_prologue = True  # start_byte in FunctionCandidate(self.gap_pointer, start_byte, self.bitness).common_gap_starts[self.bitness]
+            existing_candidate = self.candidates.get(self.gap_pointer)
+            is_trusted_candidate = existing_candidate is not None and existing_candidate.bypassesGapSanityCheck()
+            has_common_prologue = FunctionCandidate(
+                self.disassembly.binary_info, self.gap_pointer
+            ).hasCommonFunctionStart()
             if self.previously_analyzed_gap == self.gap_pointer:
                 LOGGER.debug(
                     "--- HRM, nextGapCandidate() gap_ptr at: 0x%08x was previously analyzed",
                     self.gap_pointer,
                 )
                 self.gap_pointer = self.getNextGap(dont_skip=True)
-            elif not has_common_prologue:
+            elif not (has_common_prologue or is_trusted_candidate):
                 LOGGER.debug(
-                    "--- HRM, nextGapCandidate() gap_ptr at: 0x%08x has no common prologue (0x%08x)",
+                    "--- HRM, nextGapCandidate() gap_ptr at: 0x%08x has no common prologue (0x%02x)",
                     self.gap_pointer,
-                    ord(start_byte),
+                    start_byte,
+                )
+                self.gap_pointer = self.getNextGap(dont_skip=True)
+            elif self.shouldRejectInteriorGapStart(self.gap_pointer):
+                LOGGER.debug(
+                    "nextGapCandidate() skipping interior gap candidate @0x%08x",
+                    self.gap_pointer,
                 )
                 self.gap_pointer = self.getNextGap(dont_skip=True)
             else:
@@ -383,6 +431,145 @@ class FunctionCandidateManager:
         self.ensureCandidate(addr)
         if addr in self.candidates:
             self.candidates[addr].setIsGapCandidate(True)
+
+    def markGapAttempted(self, addr):
+        self._gap_attempted_addrs.add(addr)
+
+    def clearGapAttempts(self):
+        self._gap_attempted_addrs.clear()
+
+    def advanceGapScan(self, failed_addr):
+        """Continue the linear gap sweep inside the current interval instead of skipping it."""
+        interval = self._gapIntervalForAddr(failed_addr)
+        next_addr = failed_addr + 1
+        if interval is not None:
+            _gap_start, gap_end = interval
+            if next_addr >= gap_end:
+                self.gap_pointer = gap_end
+                return
+        self.gap_pointer = next_addr
+
+    def refreshFunctionGaps(self):
+        self.function_gaps = None
+        # functions may have been recovered/merged since the borders were last cached;
+        # invalidate so containment and parent-extension decisions see fresh borders.
+        self._borders_dirty = True
+        self.updateFunctionGaps()
+
+    def _gapIntervalForAddr(self, addr):
+        if not self.function_gaps:
+            return None
+        for gap_start, gap_end, _ in self.function_gaps:
+            if gap_start <= addr < gap_end:
+                return gap_start, gap_end
+        return None
+
+    def nextTrustedCandidateInGap(self, failed_addr):
+        interval = self._gapIntervalForAddr(failed_addr)
+        if interval is None:
+            return None
+        gap_start, gap_end = interval
+        for addr in sorted(self.candidates.keys()):
+            if addr < gap_start:
+                continue
+            if addr >= gap_end:
+                # candidates are sorted ascending, so nothing further is in this gap
+                break
+            if addr in self._gap_attempted_addrs or addr in self.disassembly.code_map:
+                continue
+            candidate = self.candidates[addr]
+            if not candidate.bypassesGapSanityCheck():
+                continue
+            if self.shouldRejectInteriorGapStart(addr):
+                continue
+            self.gap_pointer = addr
+            self.addGapCandidate(addr)
+            return addr
+        return None
+
+    def _get_sorted_borders(self):
+        if getattr(self, "_borders_dirty", True) or getattr(self, "_cached_borders", None) is None:
+            self._cached_borders = sorted(
+                [(fmin, fmax, start) for start, (fmin, fmax) in self.disassembly.function_borders.items()],
+                key=lambda x: x[0],
+            )
+            self._cached_borders_starts = [x[0] for x in self._cached_borders]
+            if self._cached_borders:
+                self._max_fn_len = max(x[1] - x[0] for x in self._cached_borders)
+            else:
+                self._max_fn_len = 0
+            self._borders_dirty = False
+        return self._cached_borders
+
+    def getContainingFunctionStart(self, addr):
+        """Return the tightest function whose recorded borders contain addr."""
+        borders = self._get_sorted_borders()
+        if not borders:
+            return None
+        idx = bisect.bisect_right(self._cached_borders_starts, addr)
+        matches = []
+        max_len = self._max_fn_len
+        for i in range(idx - 1, -1, -1):
+            fmin, fmax, start = borders[i]
+            if addr - fmin > max_len:
+                break
+            if start == addr:
+                continue
+            if fmin <= addr < fmax:
+                matches.append((fmax - fmin, start))
+        if not matches:
+            return None
+        return min(matches)[1]
+
+    def shouldRejectInteriorGapStart(self, addr):
+        """Reject gap-derived starts that overwrite an existing interior function body."""
+        if addr not in self.disassembly.code_map:
+            return False
+        parent_start = self.getContainingFunctionStart(addr)
+        if parent_start is None:
+            return False
+        candidate = self.candidates.get(addr)
+        if candidate is None:
+            return True
+        if candidate.is_symbol or candidate.is_exception_handler:
+            return False
+        if candidate.call_ref_sources:
+            return False
+        parent_fmin, parent_fmax = self.disassembly.function_borders[parent_start]
+        for ref_from in self.disassembly.code_refs_to.get(addr, set()):
+            if ref_from < parent_fmin or ref_from >= parent_fmax:
+                return False
+        return True
+
+    def getInteriorExtensionParent(self, addr):
+        """Return a containing function start for an uncovered interior gap hole."""
+        if addr in self.disassembly.code_map:
+            return None
+        parent = self.getContainingFunctionStart(addr)
+        if parent is not None:
+            return parent
+        best_parent = None
+        best_gap = None
+        borders = self._get_sorted_borders()
+        if not borders:
+            return None
+        idx = bisect.bisect_right(self._cached_borders_starts, addr)
+        max_len = self._max_fn_len
+        for i in range(idx - 1, -1, -1):
+            fmin, fmax, start = borders[i]
+            if addr - fmin > max_len + 32:
+                break
+            if fmax > addr or start >= addr:
+                continue
+            if fmax - fmin > 0x10000:
+                continue
+            gap = addr - fmax
+            if gap > 32:
+                continue
+            if best_gap is None or gap < best_gap:
+                best_parent = start
+                best_gap = gap
+        return best_parent
 
     def addTailcallCandidate(self, addr):
         if not self._passesCodeFilter(addr):

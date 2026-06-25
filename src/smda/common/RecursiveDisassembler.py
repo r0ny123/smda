@@ -173,6 +173,8 @@ class RecursiveDisassembler:
         # explicit None check: address 0 is valid in base-0 buffers
         if to_addr is not None and self.disassembly.isAddrWithinMemoryImage(to_addr):
             state.addCodeRef(from_addr, to_addr)
+            if to_addr not in self.disassembly.code_map and hasattr(self.fc_manager, "addReferenceCandidate"):
+                self.fc_manager.addReferenceCandidate(to_addr, from_addr)
         if state.start_addr == to_addr:
             state.setRecursion(True)
 
@@ -243,22 +245,17 @@ class RecursiveDisassembler:
         self.tailcall_analyzer.initFunction()
         i = None
         state = self.backend.createAnalysisState(start_addr, self.disassembly)
+        if as_gap and hasattr(state, "setGapCandidateContext"):
+            state.setGapCandidateContext(self.fc_manager.getFunctionCandidate(start_addr))
         if state.isProcessedFunction():
+            owning_function = self.disassembly.ins2fn.get(start_addr)
+            if owning_function == start_addr or start_addr in self.disassembly.functions:
+                self.fc_manager.updateAnalysisFinished(start_addr)
+                return state
             self.fc_manager.updateAnalysisAborted(
                 start_addr,
-                f"collision with existing code of function 0x{self.disassembly.ins2fn[start_addr]:08x}",
+                f"collision with existing code of function 0x{owning_function:08x}",
             )
-            # return the (empty) state, not a bare list, so every caller path can safely call
-            # state.getBlocks(); this collision path is unreachable from the gap pass today, so
-            # the change is behavior-neutral (output stays byte-for-byte identical).
-            return state
-            self.fc_manager.updateAnalysisAborted(
-                start_addr,
-                f"collision with existing code of function 0x{self.disassembly.ins2fn[start_addr]:08x}",
-            )
-            # return the (empty) state, not a bare list, so every caller path can safely call
-            # state.getBlocks(); this collision path is unreachable from the gap pass today, so
-            # the change is behavior-neutral (output stays byte-for-byte identical).
             return state
         while state.hasUnprocessedBlocks():
             LOGGER.debug(
@@ -369,13 +366,509 @@ class RecursiveDisassembler:
                         self.fc_manager.getFunctionCandidate(start_addr),
                     )
         state.label = self.resolveSymbol(state.start_addr)
-        analysis_result = state.finalizeAnalysis(as_gap)
+        extension_parent = None
+        if self._intelInteriorGapEnabled() and as_gap:
+            extension_parent = self.fc_manager.getInteriorExtensionParent(start_addr)
+        if self._intelInteriorGapEnabled() and as_gap and self.fc_manager.shouldRejectInteriorGapStart(start_addr):
+            self.fc_manager.updateAnalysisAborted(
+                start_addr,
+                "interior gap candidate without external entry",
+            )
+            return state
+        analysis_result = state.finalizeAnalysis(as_gap, extend_into_parent=extension_parent is not None)
+        if analysis_result and extension_parent is not None:
+            self._mergeExtensionIntoParent(state, extension_parent)
+            if self.config.RESOLVE_REGISTER_CALLS:
+                self.indcall_analyzer.resolveRegisterCalls(state)
+                self.tailcall_analyzer.finalizeFunction(state)
+            self.fc_manager.updateAnalysisFinished(start_addr)
+            self.fc_manager.updateCandidates(state)
+            if hasattr(self.fc_manager, "_borders_dirty"):
+                self.fc_manager._borders_dirty = True
+            return state
         if analysis_result and self.config.RESOLVE_REGISTER_CALLS:
             self.indcall_analyzer.resolveRegisterCalls(state)
             self.tailcall_analyzer.finalizeFunction(state)
         self.fc_manager.updateAnalysisFinished(start_addr)
         self.fc_manager.updateCandidates(state)
+        if hasattr(self.fc_manager, "_borders_dirty"):
+            self.fc_manager._borders_dirty = True
         return state
+
+    def _reset_gap_recovery_budget(self):
+        self._gap_extra_analyses = 0
+        self._gap_recovery_limit = self._gap_recovery_budget_limit()
+
+    def _gap_recovery_budget_limit(self):
+        fixed = getattr(self.config, "GAP_RECOVERY_MAX_EXTRA_ANALYSES", 0)
+        cap = getattr(self.config, "GAP_RECOVERY_MAX_EXTRA_ANALYSES_CAP", 8000)
+        if fixed > 0:
+            return fixed
+        binary_info = self.disassembly.binary_info
+        binary_size = getattr(binary_info, "binary_size", 0) or len(getattr(binary_info, "binary", b"") or b"")
+        per_mb = getattr(self.config, "GAP_RECOVERY_EXTRA_ANALYSES_PER_MB", 200)
+        floor = getattr(self.config, "GAP_RECOVERY_EXTRA_ANALYSES_FLOOR", 500)
+        mb = max(1, binary_size // (1024 * 1024))
+        return min(cap, max(floor, mb * per_mb))
+
+    def _gap_budget_remaining(self):
+        return self._gap_extra_analyses < self._gap_recovery_limit
+
+    def _consume_gap_budget(self, count=1):
+        if not self._gap_budget_remaining():
+            return False
+        self._gap_extra_analyses += count
+        return True
+
+    def _analyze_gap_function(self, addr, cbAnalysisTimeout=None):
+        if cbAnalysisTimeout and cbAnalysisTimeout():
+            return None
+        if not self._consume_gap_budget():
+            return None
+        return self.analyzeFunction(addr, as_gap=True)
+
+    def _iter_interior_hole_starts(self, fmin, interval_end, max_scan_bytes):
+        code_map = self.disassembly.code_map
+        data_map = self.disassembly.data_map
+        addr = fmin
+        end = interval_end
+        scanned = 0
+        while addr < end and scanned < max_scan_bytes:
+            while addr < end and (addr in code_map or addr in data_map):
+                addr += 1
+                scanned += 1
+            if addr >= end or scanned >= max_scan_bytes:
+                break
+            yield addr
+            while addr < end and addr not in code_map and addr not in data_map:
+                addr += 1
+                scanned += 1
+
+    def _collect_insn_map_for_merge(self, parent_start, child_start=None, child_starts=None, extra_blocks=()):
+        fn_ids = {parent_start}
+        if child_start is not None:
+            fn_ids.add(child_start)
+        if child_starts:
+            fn_ids.update(child_starts)
+        ins_by_addr = {}
+        for block in self.disassembly.functions.get(parent_start, []):
+            for ins in block:
+                ins_by_addr[ins[0]] = ins
+        for block in extra_blocks:
+            for ins in block:
+                ins_by_addr[ins[0]] = ins
+
+        # Scan functions fmin..fmax ranges rather than all instructions in the binary
+        borders = []
+        parent_borders = self.disassembly.function_borders.get(parent_start)
+        if not parent_borders:
+            parent_blocks = self.disassembly.functions.get(parent_start)
+            if parent_blocks:
+                all_ins = [ins for block in parent_blocks for ins in block]
+                if all_ins:
+                    parent_borders = (min(ins[0] for ins in all_ins), max(ins[0] + ins[1] for ins in all_ins))
+        if parent_borders:
+            borders.append(parent_borders)
+
+        all_children = []
+        if child_start is not None:
+            all_children.append(child_start)
+        if child_starts:
+            all_children.extend(child_starts)
+
+        for child in all_children:
+            child_borders = self.disassembly.function_borders.get(child)
+            if child_borders:
+                borders.append(child_borders)
+
+        # Fallback if child borders weren't found/cached
+        if extra_blocks and (
+            not all_children or not any(self.disassembly.function_borders.get(c) for c in all_children)
+        ):
+            all_ins = [ins for block in extra_blocks for ins in block]
+            if all_ins:
+                borders.append((min(ins[0] for ins in all_ins), max(ins[0] + ins[1] for ins in all_ins)))
+
+        for fmin, fmax in borders:
+            addr = fmin
+            while addr < fmax:
+                if (
+                    addr in self.disassembly.instructions
+                    and addr not in ins_by_addr
+                    and self.disassembly.ins2fn.get(addr) in fn_ids
+                ):
+                    meta = self.disassembly.instructions[addr]
+                    mnemonic, size = meta[0], meta[1]
+                    ins_by_addr[addr] = (addr, size, mnemonic, "", b"")
+                if addr in self.disassembly.instructions:
+                    addr += self.disassembly.instructions[addr][1]
+                else:
+                    addr += 1
+        return ins_by_addr
+
+    def _rebuild_merged_function(self, parent_start, ins_by_addr):
+        if not ins_by_addr:
+            return
+        for ins in ins_by_addr.values():
+            addr, size = ins[0], ins[1]
+            self.disassembly.instructions[addr] = (ins[2], ins[1])
+            for offset in range(size):
+                self.disassembly.code_map[addr + offset] = addr
+                self.disassembly.ins2fn[addr + offset] = parent_start
+
+        state = self.backend.createAnalysisState(parent_start, self.disassembly)
+        for ins in sorted(ins_by_addr.values(), key=lambda x: x[0]):
+            state.instructions.append(ins)
+            state.instruction_start_bytes.add(ins[0])
+            state.jump_targets.add(ins[0])
+        for addr in sorted(ins_by_addr.keys()):
+            if addr not in self.disassembly.code_refs_from:
+                continue
+            parts = ins_by_addr[addr][2].split()
+            mnemonic = parts[0] if parts else ""
+            by_jump = mnemonic != "call" and (mnemonic.startswith("j") or mnemonic in state.END_MNEMONICS)
+            for target in self.disassembly.code_refs_from[addr]:
+                state.addCodeRef(addr, target, by_jump=by_jump)
+
+        fn_min = min(ins[0] for ins in ins_by_addr.values())
+        fn_max = max(ins[0] + ins[1] for ins in ins_by_addr.values())
+        self.disassembly.function_borders[parent_start] = (fn_min, fn_max)
+        self.disassembly.functions[parent_start] = state.getBlocks()
+        if hasattr(self.fc_manager, "_borders_dirty"):
+            self.fc_manager._borders_dirty = True
+
+    def _runGapRecoveryPasses(self, cbAnalysisTimeout=None):
+        self._reset_gap_recovery_budget()
+        max_passes = getattr(self.config, "GAP_RECOVERY_MAX_PASSES", 2) if self._intelInteriorGapEnabled() else 1
+        for pass_index in range(max_passes):
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            if hasattr(self.fc_manager, "refreshFunctionGaps"):
+                self.fc_manager.gap_pointer = None
+                self.fc_manager.previously_analyzed_gap = 0
+                if hasattr(self.fc_manager, "clearGapAttempts"):
+                    self.fc_manager.clearGapAttempts()
+                self.fc_manager.refreshFunctionGaps()
+            gap_candidate = self.fc_manager.nextGapCandidate()
+            while gap_candidate is not None:
+                if cbAnalysisTimeout and cbAnalysisTimeout():
+                    break
+                LOGGER.debug("based on gap, performing function analysis of 0x%08x", gap_candidate)
+                state = self.analyzeFunction(gap_candidate, as_gap=True)
+                function_blocks = state.getBlocks()
+                if function_blocks:
+                    LOGGER.debug("+ got some blocks here -> 0x%08x", gap_candidate)
+                recovered = gap_candidate in self.disassembly.functions
+                extended = state.num_blocks_analyzed > 0 and not recovered
+                if recovered:
+                    fn_min = self.disassembly.function_borders[gap_candidate][0]
+                    fn_max = self.disassembly.function_borders[gap_candidate][1]
+                    LOGGER.debug("+++ YAY, is now a function! -> 0x%08x - 0x%08x", fn_min, fn_max)
+                    if hasattr(self.fc_manager, "clearGapAttempts"):
+                        self.fc_manager.clearGapAttempts()
+                    next_gap = self.fc_manager.getNextGap(dont_skip=True)
+                    gap_candidate = self.fc_manager.nextGapCandidate(next_gap)
+                elif extended:
+                    if hasattr(self.fc_manager, "clearGapAttempts"):
+                        self.fc_manager.clearGapAttempts()
+                    gap_candidate = self.fc_manager.nextGapCandidate()
+                else:
+                    if hasattr(self.fc_manager, "markGapAttempted"):
+                        self.fc_manager.markGapAttempted(gap_candidate)
+                        retry_candidate = self.fc_manager.nextTrustedCandidateInGap(gap_candidate)
+                        if retry_candidate is not None:
+                            gap_candidate = retry_candidate
+                            continue
+                    self.fc_manager.updateAnalysisAborted(
+                        gap_candidate,
+                        "Gap candidate did not fulfil function criteria.",
+                    )
+                    if hasattr(self.fc_manager, "advanceGapScan"):
+                        self.fc_manager.advanceGapScan(gap_candidate)
+                    gap_candidate = self.fc_manager.nextGapCandidate()
+            LOGGER.debug(
+                "Finished gap analysis pass %d, functions: %d", pass_index + 1, len(self.disassembly.functions)
+            )
+            if self._intelInteriorGapEnabled():
+                self._pruneInteriorGapFunctions()
+                if self._gap_budget_remaining():
+                    self._fillInteriorFunctionHoles(cbAnalysisTimeout)
+                if self._gap_budget_remaining():
+                    self._recoverLargeUnmappedGaps(
+                        cbAnalysisTimeout,
+                        min_gap=getattr(self.config, "GAP_LARGE_UNMAPPED_MIN_BYTES", 512),
+                    )
+                fn_threshold = getattr(self.config, "GAP_SMALL_UNMAPPED_ONLY_WHEN_FUNCTIONS_BELOW", 3000)
+                if self._gap_budget_remaining() and len(self.disassembly.functions) < fn_threshold:
+                    self._recoverLargeUnmappedGaps(
+                        cbAnalysisTimeout,
+                        min_gap=getattr(self.config, "GAP_SMALL_UNMAPPED_MIN_BYTES", 64),
+                    )
+                if self._gap_budget_remaining():
+                    self._recoverPltStubs(cbAnalysisTimeout)
+                if self._gap_budget_remaining():
+                    self._recoverUnmappedCodeRefTargets(cbAnalysisTimeout)
+                self._absorbFunctionPaddingBytes()
+                LOGGER.debug("After interior gap recovery, functions: %d", len(self.disassembly.functions))
+            if pass_index + 1 < max_passes and hasattr(self.fc_manager, "refreshFunctionGaps"):
+                before = len(self.disassembly.code_map)
+                self.fc_manager.refreshFunctionGaps()
+                remaining = sum(gap[2] for gap in (self.fc_manager.function_gaps or []) if gap[2] > 1)
+                if remaining == 0 or len(self.disassembly.code_map) == before:
+                    break
+
+    def _recoverUnmappedCodeRefTargets(self, cbAnalysisTimeout=None):
+        if not hasattr(self.fc_manager, "addReferenceCandidate"):
+            return
+        targets = set()
+        for target in self.disassembly.code_refs_to:
+            if target in self.disassembly.code_map or target in self.disassembly.data_map:
+                continue
+            if not self.disassembly.isAddrWithinMemoryImage(target):
+                continue
+            if not self.fc_manager._passesCodeFilter(target):
+                continue
+            targets.add(target)
+        target_limit = getattr(self.config, "GAP_UNMAPPED_CODE_REF_TARGET_LIMIT", 512)
+        for target in sorted(targets)[:target_limit]:
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            if not self._gap_budget_remaining():
+                break
+            if target in self.disassembly.code_map:
+                continue
+            self.fc_manager.addReferenceCandidate(target, min(self.disassembly.code_refs_to[target]))
+            if not self._consume_gap_budget():
+                break
+            self.analyzeFunction(target)
+
+    def _absorbFunctionPaddingBytes(self):
+        padding = {0x00, 0x90, 0xCC}
+        for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
+            addr = fmax
+            absorbed = []
+            while addr < fmax + 8 and self.disassembly.isAddrWithinMemoryImage(addr):
+                if addr in self.disassembly.code_map or addr in self.disassembly.data_map:
+                    break
+                byte = self.disassembly.getByte(addr)
+                if isinstance(byte, str):
+                    byte = ord(byte)
+                if byte not in padding:
+                    break
+                absorbed.append(addr)
+                addr += 1
+            if not absorbed:
+                continue
+            ins_addr = absorbed[0]
+            ins_size = len(absorbed)
+            mnemonic = (
+                "nop"
+                if all(
+                    (ord(b) if isinstance(b, str) else b) in (0x90, 0xCC)
+                    for b in (self.disassembly.getByte(a) for a in absorbed)
+                )
+                else "db"
+            )
+            self.disassembly.instructions[ins_addr] = (mnemonic, ins_size)
+            for pad_addr in absorbed:
+                self.disassembly.code_map[pad_addr] = ins_addr
+                self.disassembly.ins2fn[pad_addr] = fn_start
+            self.disassembly.function_borders[fn_start] = (fmin, addr)
+            blocks = self.disassembly.functions.get(fn_start)
+            if blocks is not None:
+                blocks[-1].append((ins_addr, ins_size, mnemonic, "", b""))
+                self.disassembly.functions[fn_start] = blocks
+            if hasattr(self.fc_manager, "_borders_dirty"):
+                self.fc_manager._borders_dirty = True
+
+    def _intelInteriorGapEnabled(self):
+        return getattr(self.backend, "name", "") == "intel"
+
+    def _pruneInteriorGapFunctions(self):
+        manager = self.fc_manager
+        parent_to_children = {}
+        for fn_start in list(self.disassembly.functions.keys()):
+            candidate = manager.candidates.get(fn_start)
+            if candidate is None or not candidate.is_gap_candidate:
+                continue
+            if manager.shouldRejectInteriorGapStart(fn_start):
+                parent_start = manager.getContainingFunctionStart(fn_start)
+                if parent_start is not None:
+                    parent_to_children.setdefault(parent_start, []).append(fn_start)
+
+        for parent_start, children in sorted(parent_to_children.items(), reverse=True):
+            all_child_blocks = []
+            for child_start in children:
+                child_blocks = self.disassembly.functions.pop(child_start, None)
+                if child_blocks:
+                    all_child_blocks.extend(child_blocks)
+                self.disassembly.function_borders.pop(child_start, None)
+                self.disassembly.function_symbols.pop(child_start, None)
+                self.disassembly.recursive_functions.discard(child_start)
+                self.disassembly.leaf_functions.discard(child_start)
+                self.disassembly.thunk_functions.discard(child_start)
+
+                candidate = manager.candidates.get(child_start)
+                if candidate is not None:
+                    candidate.setAnalysisAborted("pruned interior gap function")
+
+            if all_child_blocks:
+                ins_by_addr = self._collect_insn_map_for_merge(
+                    parent_start,
+                    child_starts=children,
+                    extra_blocks=all_child_blocks,
+                )
+                self._rebuild_merged_function(parent_start, ins_by_addr)
+
+    def _mergeExtensionIntoParent(self, state, parent_start):
+        if not state.instructions:
+            return
+        parent_borders = self.disassembly.function_borders.get(parent_start)
+        if parent_borders is not None and parent_borders[1] - parent_borders[0] > 0x10000:
+            if state.num_blocks_analyzed:
+                state._finalizeRegularAnalysis()
+            return
+        for cref in state.code_refs:
+            self.disassembly.addCodeRefs(cref[0], cref[1])
+        for dref in state.data_refs:
+            self.disassembly.addDataRefs(dref[0], dref[1])
+        self.disassembly.data_map.update(state.data_bytes)
+
+        ins_by_addr = self._collect_insn_map_for_merge(parent_start)
+        for ins in state.instructions:
+            ins_by_addr[ins[0]] = ins
+        self._rebuild_merged_function(parent_start, ins_by_addr)
+
+    def _fillInteriorFunctionHoles(self, cbAnalysisTimeout=None):
+        max_rounds = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_ROUNDS", 2)
+        max_attempts = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_ATTEMPTS_PER_PASS", 256)
+        max_scan = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_SCAN_BYTES", 4096)
+        attempts = 0
+        for _round in range(max_rounds):
+            if not self._gap_budget_remaining():
+                break
+            progress = False
+            for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
+                if fmax - fmin > 0x10000:
+                    continue
+                interval_end = fmax
+                if hasattr(self.fc_manager, "_gapIntervalForAddr"):
+                    interval = self.fc_manager._gapIntervalForAddr(fmax - 1)
+                    if interval is not None:
+                        interval_end = interval[1]
+                for hole_start in self._iter_interior_hole_starts(fmin, interval_end, max_scan):
+                    if attempts >= max_attempts or not self._gap_budget_remaining():
+                        return
+                    if self.fc_manager.getInteriorExtensionParent(hole_start) != fn_start:
+                        continue
+                    state = self._analyze_gap_function(hole_start, cbAnalysisTimeout)
+                    attempts += 1
+                    if state and state.num_blocks_analyzed:
+                        progress = True
+            if not progress:
+                break
+
+    def _recoverPltStubs(self, cbAnalysisTimeout=None):
+        if not self.disassembly.binary_info:
+            return
+        plt_ranges = []
+        for section in self.disassembly.binary_info.getSections() or []:
+            name = str(getattr(section, "name", "") or "")
+            if ".plt" not in name or ".plt." in name:
+                continue
+            section_start = getattr(section, "virtual_address", 0)
+            section_size = getattr(section, "size", 0)
+            if section_size:
+                plt_ranges.append((section_start, section_start + section_size))
+        if not plt_ranges:
+            return
+        for section_start, section_end in plt_ranges:
+            for addr in range(section_start, section_end, 6):
+                if cbAnalysisTimeout and cbAnalysisTimeout():
+                    return
+                if addr in self.disassembly.code_map:
+                    continue
+                state = self._analyze_gap_function(addr, cbAnalysisTimeout)
+                if state and state.num_blocks_analyzed:
+                    LOGGER.debug("recovered PLT stub @0x%08x", addr)
+
+    def _firstExecutableInsnInRange(self, start_addr, end_addr):
+        binary_info = self.disassembly.binary_info
+        buf = binary_info.binary or b""
+        base = binary_info.base_addr or 0
+        offset = start_addr - base
+        if offset < 0 or offset >= len(buf):
+            return None
+        window = buf[offset : offset + max(0, end_addr - start_addr)]
+        for ins in self.capstone.disasm_lite(window, start_addr):
+            if start_addr <= ins[0] < end_addr:
+                return ins[0]
+        return None
+
+    def _recoverLargeUnmappedGaps(self, cbAnalysisTimeout=None, min_gap=512):
+        if not hasattr(self.fc_manager, "refreshFunctionGaps"):
+            return
+        self.fc_manager.refreshFunctionGaps()
+        for gap_start, gap_end, gap_len in sorted(self.fc_manager.function_gaps or [], key=lambda gap: -gap[2]):
+            if gap_len < min_gap:
+                continue
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            scan_addr = gap_start
+            if scan_addr not in self.disassembly.code_map:
+                scan_addr = self._firstExecutableInsnInRange(gap_start, min(gap_start + 64, gap_end)) or gap_start
+            if scan_addr in self.disassembly.code_map:
+                continue
+            state = self._analyze_gap_function(scan_addr, cbAnalysisTimeout)
+            if state and state.num_blocks_analyzed:
+                LOGGER.debug(
+                    "recovered large gap function @0x%08x (%d bytes, %d blocks)",
+                    gap_start,
+                    gap_len,
+                    state.num_blocks_analyzed,
+                )
+
+    def _mergeInteriorGapFunction(self, child_start):
+        parent_start = self.fc_manager.getContainingFunctionStart(child_start)
+        if parent_start is None:
+            return
+        child_blocks = self.disassembly.functions.pop(child_start, None)
+        if not child_blocks:
+            return
+        self.disassembly.function_borders.pop(child_start, None)
+        self.disassembly.function_symbols.pop(child_start, None)
+        self.disassembly.recursive_functions.discard(child_start)
+        self.disassembly.leaf_functions.discard(child_start)
+        self.disassembly.thunk_functions.discard(child_start)
+
+        ins_by_addr = self._collect_insn_map_for_merge(
+            parent_start,
+            child_start=child_start,
+            extra_blocks=child_blocks,
+        )
+        self._rebuild_merged_function(parent_start, ins_by_addr)
+
+        candidate = self.fc_manager.candidates.get(child_start)
+        if candidate is not None:
+            candidate.setAnalysisAborted("pruned interior gap function")
+
+    def _finalizeCoverageMetrics(self):
+        gaps = []
+        binary_info = self.disassembly.binary_info
+        code_areas = binary_info.code_areas
+        if not code_areas and binary_info.base_addr is not None:
+            code_areas = [(binary_info.base_addr, binary_info.base_addr + binary_info.binary_size)]
+        for area_start, area_end in code_areas or []:
+            prev = area_start
+            for addr in sorted(a for a in self.disassembly.code_map if area_start <= a < area_end):
+                if addr > prev:
+                    gap_len = addr - prev
+                    if gap_len > 1:
+                        gaps.append([prev, addr, gap_len])
+                prev = max(prev, addr + 1)
+            if prev < area_end:
+                gaps.append([prev, area_end, area_end - prev])
+        self.disassembly.unanalyzed_code_gaps = sorted(gaps, key=lambda gap: gap[2], reverse=True)[:32]
 
     def analyzeBuffer(self, binary_info, cbAnalysisTimeout=None):
         LOGGER.debug(
@@ -421,37 +914,19 @@ class RecursiveDisassembler:
         for candidate in self.fc_manager.getNextFunctionStartCandidate():
             if cbAnalysisTimeout and cbAnalysisTimeout():
                 break
-            state = self.analyzeFunction(candidate.addr)
+            self.analyzeFunction(candidate.addr)
         LOGGER.debug(
             "Finished heuristical analysis, functions: %d",
             len(self.disassembly.functions),
         )
-        # second pass, analyze remaining gaps for additional candidates in an iterative way
-        gap_candidate = self.fc_manager.nextGapCandidate()
-        while gap_candidate is not None:
-            if cbAnalysisTimeout and cbAnalysisTimeout():
-                break
-            LOGGER.debug("based on gap, performing function analysis of 0x%08x", gap_candidate)
-            state = self.analyzeFunction(gap_candidate, as_gap=True)
-            function_blocks = state.getBlocks()
-            if function_blocks:
-                LOGGER.debug("+ got some blocks here -> 0x%08x", gap_candidate)
-            if gap_candidate in self.disassembly.functions:
-                fn_min = self.disassembly.function_borders[gap_candidate][0]
-                fn_max = self.disassembly.function_borders[gap_candidate][1]
-                LOGGER.debug("+++ YAY, is now a function! -> 0x%08x - 0x%08x", fn_min, fn_max)
-                # start looking directly after our new function
-            else:
-                self.fc_manager.updateAnalysisAborted(gap_candidate, "Gap candidate did not fulfil function criteria.")
-            next_gap = self.fc_manager.getNextGap(dont_skip=True)
-            gap_candidate = self.fc_manager.nextGapCandidate(next_gap)
-        LOGGER.debug("Finished gap analysis, functions: %d", len(self.disassembly.functions))
+        # second pass, analyze remaining gaps (multi-pass gap recovery)
+        self._runGapRecoveryPasses(cbAnalysisTimeout)
         # candidates may have been discovered during gap analysis (e.g. tailcall targets triggered
         # by _analyzeUncondBranch); drain them before moving to the tailcall pass.
         for candidate in self.fc_manager.getNextFunctionStartCandidate():
             if cbAnalysisTimeout and cbAnalysisTimeout():
                 break
-            state = self.analyzeFunction(candidate.addr)
+            self.analyzeFunction(candidate.addr)
         # third pass, fix potential tailcall functions that were identified during analysis
         if self.config.RESOLVE_TAILCALLS:
             tailcalled_functions = self.tailcall_analyzer.resolveTailcalls(self)
@@ -462,8 +937,9 @@ class RecursiveDisassembler:
             for candidate in self.fc_manager.getNextFunctionStartCandidate():
                 if cbAnalysisTimeout and cbAnalysisTimeout():
                     break
-                state = self.analyzeFunction(candidate.addr)
+                self.analyzeFunction(candidate.addr)
         self.disassembly.failed_analysis_addr = self.fc_manager.getAbortedCandidates()
+        self._finalizeCoverageMetrics()
         # package up and finish
         for addr, candidate in self.fc_manager.candidates.items():
             if addr in self.disassembly.functions:

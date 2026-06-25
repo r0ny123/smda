@@ -34,6 +34,19 @@ class SmdaConfig:
     RESOLVE_REGISTER_CALLS = True
     # limit this to avoid blowing up analysis time for weird samples
     MAX_INDIRECT_CALLS_PER_BASIC_BLOCK = 50
+    # Intel interior-gap recovery budgets (0 == auto-scale from mapped image size)
+    GAP_RECOVERY_MAX_PASSES = 2
+    GAP_RECOVERY_MAX_EXTRA_ANALYSES = 0
+    GAP_RECOVERY_EXTRA_ANALYSES_PER_MB = 200
+    GAP_RECOVERY_EXTRA_ANALYSES_FLOOR = 500
+    GAP_RECOVERY_MAX_EXTRA_ANALYSES_CAP = 8000
+    GAP_INTERIOR_HOLE_MAX_ROUNDS = 2
+    GAP_INTERIOR_HOLE_MAX_ATTEMPTS_PER_PASS = 1024
+    GAP_INTERIOR_HOLE_MAX_SCAN_BYTES = 4096
+    GAP_LARGE_UNMAPPED_MIN_BYTES = 512
+    GAP_SMALL_UNMAPPED_MIN_BYTES = 64
+    GAP_SMALL_UNMAPPED_ONLY_WHEN_FUNCTIONS_BELOW = 3000
+    GAP_UNMAPPED_CODE_REF_TARGET_LIMIT = 512
     # backstops against memory usage explosion during candidate identification on pathological/junk samples
     # maximum number of function candidates to track; 0 == unlimited. Normal binaries have orders of magnitude fewer.
     MAX_FUNCTION_CANDIDATES = 200000

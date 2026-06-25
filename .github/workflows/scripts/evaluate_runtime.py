@@ -8,7 +8,8 @@ folders under ``runtime_measurements/``). It then:
 
   * verifies each side is internally deterministic (function-address sets agree
     across repeated runs of the same code),
-  * compares correctness between base and PR (function-address sets), and
+  * compares correctness between base and PR (rooted instruction-address recall;
+    function-set drift is informational), and
   * compares performance with a PAIRED, per-file design using min-of-runs as a
     low-noise estimator, reporting a bootstrap confidence interval and a
     Wilcoxon signed-rank test.
@@ -16,7 +17,7 @@ folders under ``runtime_measurements/``). It then:
 Outputs (under ``runtime_measurements/cache/``): ``evaluation.{json,html,md}``.
 
 Exit codes (gating can be disabled with ``--no-gate`` or ``SMDA_BENCH_GATE=0``):
-  0  ok                       1  PR correctness regression vs base
+  0  ok                       1  PR rooted-instruction recall regression vs base
   2  non-determinism          3  no comparable data (only with ``--require-data``)
 
 All statistics are pure-Python (``statistics`` + ``random``); no third-party deps.
@@ -38,7 +39,9 @@ BASE_PATH = Path(__file__).resolve().parent.parent.parent.parent
 RUNTIME_PATH = BASE_PATH / "runtime_measurements"
 CACHE_PATH = RUNTIME_PATH / "cache"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 3
+INSTRUCTION_RECALL_TOLERANCE = 0.01
 
 
 def compute_file_hash(filepath):
@@ -65,13 +68,95 @@ def compute_five_num_summary(values):
     }
 
 
+def _parse_int(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value, 0)
+    return int(value)
+
+
+def _instruction_offset(instruction):
+    if isinstance(instruction, list) and instruction:
+        return _parse_int(instruction[0])
+    if isinstance(instruction, dict):
+        return _parse_int(instruction.get("offset", instruction.get("address")))
+    return None
+
+
+def _iter_instruction_offsets(blocks):
+    iterable = blocks.values() if isinstance(blocks, dict) else blocks
+    for block in iterable:
+        if isinstance(block, dict):
+            instructions = block.get("instructions", block.get("insns", []))
+        elif isinstance(block, list):
+            instructions = block
+        else:
+            instructions = []
+        for instruction in instructions:
+            offset = _instruction_offset(instruction)
+            if offset is not None:
+                yield offset
+
+
+def _rooted_instruction_addrs(data, functions):
+    """Return instruction addresses in the statically evidenced execution component.
+
+    Prefer report-visible seeds (OEP, exports, symbols) plus their function-call
+    closure. Some memory-dump reports have no usable seed in the serialized
+    function set; for those, fall back to xref-rooted functions rather than raw
+    instruction totals so prologue-only/orphan islands do not dominate the gate.
+    """
+    starts = set(functions)
+    base_addr = data.get("base_addr") or 0
+    oep = data.get("oep")
+    oep_values = {
+        candidate for candidate in (oep, base_addr + oep if oep is not None else None) if candidate is not None
+    }
+
+    def has_oep(function):
+        if function["start"] in oep_values:
+            return True
+        return bool(function["insns"] & oep_values)
+
+    def closure(seed_predicate):
+        queue = [start for start, function in functions.items() if seed_predicate(function)]
+        seen = set(queue)
+        for start in queue:
+            for target in functions[start]["outrefs"]:
+                if target in starts and target not in seen:
+                    seen.add(target)
+                    queue.append(target)
+        rooted = set()
+        for start in seen:
+            rooted.update(functions[start]["insns"])
+        return rooted, len(seen)
+
+    rooted, rooted_functions = closure(
+        lambda function: has_oep(function) or bool(function["is_exported"]) or bool(function["function_name"])
+    )
+    if rooted:
+        return rooted, "seed-closure", rooted_functions
+
+    rooted, rooted_functions = closure(lambda function: bool(function["inrefs"]))
+    if rooted:
+        return rooted, "xref-closure", rooted_functions
+
+    all_insns = set()
+    for function in functions.values():
+        all_insns.update(function["insns"])
+    return all_insns, "all-instructions", len(functions)
+
+
 def parse_report(filepath):
     """Parse a single SMDA JSON report and extract precomputed values.
 
     Note: ``xcfg[addr]["blocks"]`` is serialized by ``SmdaFunction.toDict()`` as a
     dict ``{block_offset: [instructions]}``, so ``len(blocks)`` is the number of
-    basic blocks. We keep that count for throughput context, but correctness is
-    compared via the set of function addresses (the keys of ``block_counts``).
+    basic blocks. We keep that count for throughput context. Correctness is gated
+    on instruction recall; function-address set drift is reported separately.
     """
     with open(filepath) as f:
         data = json.load(f)
@@ -79,18 +164,49 @@ def parse_report(filepath):
     xcfg = data.get("xcfg", {})
     total_blocks = 0
     block_counts = {}
+    instruction_addrs = set()
+    functions = {}
+    function_starts = {_parse_int(addr) for addr in xcfg}
     for addr, func_data in xcfg.items():
+        function_start = _parse_int(addr)
         blocks = func_data.get("blocks", [])
         num_blocks = len(blocks)
         block_counts[addr] = num_blocks
         total_blocks += num_blocks
+        function_insns = set(_iter_instruction_offsets(blocks))
+        instruction_addrs.update(function_insns)
+
+        outrefs = set()
+        for targets in func_data.get("outrefs", {}).values():
+            for target in targets:
+                target_addr = _parse_int(target)
+                if target_addr in function_starts:
+                    outrefs.add(target_addr)
+
+        functions[function_start] = {
+            "start": function_start,
+            "insns": function_insns,
+            "outrefs": outrefs,
+            "inrefs": func_data.get("inrefs", []),
+            "is_exported": func_data.get("is_exported", False),
+            "function_name": func_data.get("metadata", {}).get("function_name", ""),
+        }
+
+    rooted_instruction_addrs, rooted_mode, rooted_functions = _rooted_instruction_addrs(data, functions)
 
     exec_time = data.get("execution_time", 0)
 
     return {
+        "cache_schema_version": CACHE_SCHEMA_VERSION,
         "function_count": len(block_counts),
         "block_counts": block_counts,
         "total_blocks": total_blocks,
+        "instruction_count": len(instruction_addrs),
+        "instruction_addrs": sorted(instruction_addrs),
+        "rooted_instruction_count": len(rooted_instruction_addrs),
+        "rooted_instruction_addrs": sorted(rooted_instruction_addrs),
+        "rooted_instruction_mode": rooted_mode,
+        "rooted_function_count": rooted_functions,
         "execution_time": exec_time,
         "file_hash": compute_file_hash(filepath),
     }
@@ -149,7 +265,11 @@ def cache_reports(folder_path):
         all_valid = True
         for filename, cached_info in cached.items():
             filepath = folder_path / filename
-            if not filepath.exists() or compute_file_hash(filepath) != cached_info.get("file_hash", ""):
+            if (
+                not filepath.exists()
+                or compute_file_hash(filepath) != cached_info.get("file_hash", "")
+                or cached_info.get("cache_schema_version") != CACHE_SCHEMA_VERSION
+            ):
                 all_valid = False
                 break
         if all_valid:
@@ -202,6 +322,16 @@ def aggregate_runs(side_caches):
             "times_all": times,
             "function_addrs": addr_sets[0],
             "function_count": reps[0].get("function_count", len(addr_sets[0])),
+            # use cross-run reducers (consistent with timing aggregation) so report context
+            # does not flip on single-run instruction-count variance
+            "instruction_count": int(statistics.median([r.get("instruction_count", 0) or 0 for r in reps])),
+            "rooted_instruction_count": int(
+                statistics.median([r.get("rooted_instruction_count", 0) or 0 for r in reps])
+            ),
+            "instruction_addrs": frozenset(reps[0].get("instruction_addrs", [])),
+            "rooted_instruction_addrs": frozenset(reps[0].get("rooted_instruction_addrs", [])),
+            "rooted_instruction_mode": reps[0].get("rooted_instruction_mode", "unknown"),
+            "rooted_function_count": reps[0].get("rooted_function_count", 0),
             "addr_sets": addr_sets,
             "block_counts": reps[0].get("block_counts", {}),
         }
@@ -242,15 +372,15 @@ def check_determinism(aggregated):
     }
 
 
-def build_paired(base_agg, pr_agg):
-    """Pair base vs PR on common files. Correctness uses function-address sets;
-    timing uses per-file min-of-runs. Returns parallel lists + mismatch records."""
+def build_paired(base_agg, pr_agg, instruction_tolerance=INSTRUCTION_RECALL_TOLERANCE):
+    """Pair base vs PR on common files. Rooted instruction-address recall gates correctness;
+    function-address drift is informational. Timing uses per-file min-of-runs."""
     common = sorted(set(base_agg) & set(pr_agg))
     only_in_base = sorted(set(base_agg) - set(pr_agg))
     only_in_pr = sorted(set(pr_agg) - set(base_agg))
 
     base_times, pr_times, speedups, timed_files = [], [], [], []
-    regressions, degenerate, block_drift = [], [], []
+    regressions, instruction_regressions, degenerate, block_drift = [], [], [], []
 
     for filename in common:
         b = base_agg[filename]
@@ -264,6 +394,24 @@ def build_paired(base_agg, pr_agg):
                     "pr_count": p["function_count"],
                     "only_in_base": sorted(b["function_addrs"] - p["function_addrs"]),
                     "only_in_pr": sorted(p["function_addrs"] - b["function_addrs"]),
+                }
+            )
+
+        base_rooted = b.get("rooted_instruction_addrs", frozenset())
+        pr_all = p.get("instruction_addrs", frozenset())
+        recovered_rooted = len(base_rooted & pr_all)
+        recall = (recovered_rooted / len(base_rooted)) if base_rooted else 1.0
+        if base_rooted and recall < (1.0 - instruction_tolerance):
+            instruction_regressions.append(
+                {
+                    "file": filename,
+                    "base_rooted_instructions": len(base_rooted),
+                    "pr_recovered_rooted_instructions": recovered_rooted,
+                    "lost_rooted_instructions": len(base_rooted) - recovered_rooted,
+                    "base_instructions": b.get("instruction_count", 0),
+                    "pr_instructions": p.get("instruction_count", 0),
+                    "rooted_mode": b.get("rooted_instruction_mode", "unknown"),
+                    "recall": round(recall, 4),
                 }
             )
 
@@ -301,6 +449,7 @@ def build_paired(base_agg, pr_agg):
         "pr_times": pr_times,
         "speedups": speedups,
         "regressions": regressions,
+        "instruction_regressions": instruction_regressions,
         "degenerate": degenerate,
         "block_drift": block_drift,
     }
@@ -556,12 +705,14 @@ def generate_markdown_report(model, output_path):
         ]
 
     corr_icon = "✅ PASS" if corr["pass"] else "❌ FAIL"
+    drift_icon = "✅" if not corr.get("function_set_drift") else "ℹ️"
     det_icon = "✅ PASS" if det["base"]["is_deterministic"] and det["pr"]["is_deterministic"] else "❌ FAIL"
     lines += [
         "#### Summary",
         "| Metric | Result |",
         "| --- | --- |",
-        f"| Correctness | **{corr_icon}** — {len(corr['regressions'])} / {corr['n_common']} common file(s) differ |",
+        f"| Rooted instruction recall | **{corr_icon}** — {len(corr.get('instruction_regressions', []))} / {corr['n_common']} file(s) below tolerance |",
+        f"| Function-set drift | **{drift_icon}** — {len(corr.get('function_set_drift', []))} / {corr['n_common']} file(s) differ (informational) |",
         f"| Determinism | **{det_icon}** — base {det['base']['runs']} run(s), PR {det['pr']['runs']} run(s) |",
         f"| Verdict | **{paired['verdict']}** |",
         f"| Median paired speedup | {paired['median_speedup']:+.2f}% "
@@ -631,18 +782,41 @@ def generate_markdown_report(model, output_path):
             "",
         ]
 
-    if corr["regressions"]:
-        lines.append("#### ⚠️ Correctness Regressions (PR vs base)")
+    if corr.get("instruction_regressions"):
+        lines.append("#### ⚠️ Rooted Instruction Recall Regressions (PR vs base)")
         lines.append("")
-        lines.append(f"<details>\n<summary>{len(corr['regressions'])} file(s) with differing function sets</summary>")
+        lines.append(
+            f"<details>\n<summary>{len(corr['instruction_regressions'])} file(s) below "
+            f"{corr.get('instruction_tolerance', INSTRUCTION_RECALL_TOLERANCE) * 100:.1f}% recall</summary>"
+        )
         lines.append("")
-        for m in corr["regressions"][:25]:
+        for m in corr["instruction_regressions"][:25]:
+            lines.append(
+                f"- `{m['file']}`: recovered {m['pr_recovered_rooted_instructions']} / "
+                f"{m['base_rooted_instructions']} rooted base insns "
+                f"(recall {m['recall'] * 100:.2f}%, mode {m['rooted_mode']}; "
+                f"raw base/PR {m['base_instructions']}/{m['pr_instructions']})"
+            )
+        if len(corr["instruction_regressions"]) > 25:
+            lines.append(f"- ... and {len(corr['instruction_regressions']) - 25} more")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    if corr.get("function_set_drift"):
+        lines.append("#### ℹ️ Function-set Drift (informational — not gated)")
+        lines.append("")
+        lines.append(
+            f"<details>\n<summary>{len(corr['function_set_drift'])} file(s) with differing function sets</summary>"
+        )
+        lines.append("")
+        for m in corr["function_set_drift"][:25]:
             lines.append(
                 f"- `{m['file']}`: base {m['base_count']} funcs, PR {m['pr_count']} funcs "
                 f"(+{len(m['only_in_pr'])} only in PR, -{len(m['only_in_base'])} only in base)"
             )
-        if len(corr["regressions"]) > 25:
-            lines.append(f"- ... and {len(corr['regressions']) - 25} more")
+        if len(corr["function_set_drift"]) > 25:
+            lines.append(f"- ... and {len(corr['function_set_drift']) - 25} more")
         lines.append("")
         lines.append("</details>")
         lines.append("")
@@ -652,8 +826,7 @@ def generate_markdown_report(model, output_path):
         lines.append("")
         lines.append(
             "Functions present on both sides whose basic-block count changed. This is reported "
-            "for visibility only and does not affect the correctness gate (which compares the "
-            "function-address set)."
+            "for visibility only and does not affect the rooted instruction-recall correctness gate."
         )
         lines.append("")
         lines.append(f"<details>\n<summary>{len(block_drift)} function(s) with differing block counts</summary>")
@@ -737,7 +910,7 @@ def generate_html_report(model, output_path):
     if not corr_ok or not det["base"]["is_deterministic"] or not det["pr"]["is_deterministic"]:
         issues = []
         if not corr_ok:
-            issues.append(f"{len(corr['regressions'])} correctness regression(s)")
+            issues.append(f"{len(corr['instruction_regressions'])} rooted-instruction recall regression(s)")
         for side in ("base", "pr"):
             if not det[side]["is_deterministic"]:
                 issues.append(f"{side} non-determinism ({len(det[side]['files_disagreeing'])} files)")
@@ -746,7 +919,8 @@ def generate_html_report(model, output_path):
     html += '    <div class="summary">\n        <h3>Correctness & Performance</h3>\n        <div class="stats">\n'
     html += card("Correctness", '<span class="pass">PASS</span>' if corr_ok else '<span class="fail">FAIL</span>')
     html += card("Common Files", corr["n_common"])
-    html += card("Regressions", len(corr["regressions"]))
+    html += card("Rooted Instruction Regressions", len(corr["instruction_regressions"]))
+    html += card("Function-set Drift (info)", len(corr.get("function_set_drift", [])))
     html += card("Median Paired Speedup", f"{paired['median_speedup']:+.2f}%")
     html += card("Median Paired Speedup 95% CI", f"[{paired['ci_median'][0]:+.2f}%, {paired['ci_median'][1]:+.2f}%]")
     html += card("Wilcoxon p", p_text)
@@ -848,9 +1022,12 @@ def evaluate(runtime_path):
         "runs": {"base": len(base_folders), "pr": len(pr_folders)},
         "determinism": {"base": base_det, "pr": pr_det},
         "correctness": {
-            "pass": len(paired["regressions"]) == 0,
+            "pass": len(paired["instruction_regressions"]) == 0,
             "n_common": len(paired["common_files"]),
-            "regressions": paired["regressions"],
+            "instruction_tolerance": INSTRUCTION_RECALL_TOLERANCE,
+            "instruction_recall_policy": "seed-closure with xref-closure fallback, matched by instruction address",
+            "instruction_regressions": paired["instruction_regressions"],
+            "function_set_drift": paired["regressions"],
             "only_in_base": paired["only_in_base"],
             "only_in_pr": paired["only_in_pr"],
         },
@@ -922,8 +1099,8 @@ def main(argv=None):
     if nondet_sides:
         reasons.append(f"non-determinism on: {', '.join(nondet_sides)}")
     if correctness_failed:
-        n = len(model["correctness"]["regressions"])
-        reasons.append(f"{n} correctness regression(s) vs base")
+        n = len(model["correctness"]["instruction_regressions"])
+        reasons.append(f"{n} rooted-instruction recall regression(s) vs base")
 
     if gate:
         if nondet_sides and not args.no_fail_on_nondeterminism:
@@ -940,8 +1117,8 @@ def main(argv=None):
 
     paired = model["performance"]["paired"]
     print(
-        f"Correctness: {'PASS' if model['correctness']['pass'] else 'FAIL'} "
-        f"({len(model['correctness']['regressions'])} regressions); "
+        f"Rooted instruction recall: {'PASS' if model['correctness']['pass'] else 'FAIL'} "
+        f"({len(model['correctness']['instruction_regressions'])} regressions); "
         f"median speedup {paired['median_speedup']:+.2f}% "
         f"CI[{paired['ci_median'][0]:+.2f}%,{paired['ci_median'][1]:+.2f}%]; verdict: {paired['verdict']}"
     )

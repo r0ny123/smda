@@ -20,12 +20,28 @@ def _load_module():
 er = _load_module()
 
 
-def _write_report(folder: Path, name: str, addrs, exec_time):
+def _write_report(folder: Path, name: str, addrs, exec_time, insn_per_func=1):
     """Write a minimal .smda report with the given function addresses and time."""
     folder.mkdir(parents=True, exist_ok=True)
+    xcfg = {}
+    for addr in addrs:
+        start = int(addr, 0) if isinstance(addr, str) else int(addr)
+        xcfg[addr] = {"blocks": {str(start): [{"offset": start + i} for i in range(insn_per_func)]}}
     data = {
         "execution_time": exec_time,
-        "xcfg": {a: {"blocks": {"0": []}} for a in addrs},
+        "xcfg": xcfg,
+    }
+    with open(folder / f"{name}.smda", "w") as f:
+        json.dump(data, f)
+
+
+def _write_xcfg_report(folder: Path, name: str, xcfg, exec_time=1.0, oep=None, base_addr=0):
+    folder.mkdir(parents=True, exist_ok=True)
+    data = {
+        "base_addr": base_addr,
+        "execution_time": exec_time,
+        "oep": oep,
+        "xcfg": xcfg,
     }
     with open(folder / f"{name}.smda", "w") as f:
         json.dump(data, f)
@@ -83,8 +99,13 @@ class TestWilcoxon(unittest.TestCase):
 
 
 class TestAggregationAndDeterminism(unittest.TestCase):
-    def _rep(self, addrs, t):
-        return {"execution_time": t, "block_counts": dict.fromkeys(addrs, 1), "function_count": len(addrs)}
+    def _rep(self, addrs, t, insn_per_func=1):
+        return {
+            "execution_time": t,
+            "block_counts": dict.fromkeys(addrs, 1),
+            "function_count": len(addrs),
+            "instruction_count": len(addrs) * insn_per_func,
+        }
 
     def test_min_of_runs(self):
         caches = {
@@ -125,7 +146,7 @@ class TestAggregationAndDeterminism(unittest.TestCase):
         stats = er.compute_paired_stats(paired)
         self.assertEqual(stats["n"], 5)
         self.assertGreater(stats["median_speedup"], 0)  # +50%
-        self.assertEqual(len(paired["regressions"]), 0)
+        self.assertEqual(len(paired["instruction_regressions"]), 0)
 
     def test_pairwise_matrix_reports_every_run_combination(self):
         base = {
@@ -193,13 +214,119 @@ class TestEndToEnd(unittest.TestCase):
             self.assertIn("Diagnostic only", md)
             self.assertIn("pr_0 vs base_0", md)
 
-    def test_correctness_regression_exit_1(self):
+    def test_instruction_regression_exit_1(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             base = [{"f0.smda": (["0x1", "0x2"], 1.0)} for _ in range(3)]
-            pr = [{"f0.smda": (["0x1"], 1.0)} for _ in range(3)]  # PR dropped 0x2
+            pr = [{"f0.smda": (["0x1"], 1.0)} for _ in range(3)]  # PR dropped half the instructions
             self._make(root, base, pr)
             self.assertEqual(self._run(root), 1)
+
+    def test_function_set_drift_without_instruction_loss_exit_0(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for i in range(3):
+                _write_report(root / f"base_{i}", "f0", ["0x1", "0x2"], 1.0, insn_per_func=1)
+                _write_report(root / f"pr_{i}", "f0", ["0x1"], 1.0, insn_per_func=2)
+            self.assertEqual(self._run(root), 0)
+            model = json.loads((root / "cache" / "evaluation.json").read_text())
+            self.assertTrue(model["correctness"]["pass"])
+            self.assertEqual(len(model["correctness"]["function_set_drift"]), 1)
+            self.assertEqual(len(model["correctness"]["instruction_regressions"]), 0)
+
+    def test_orphan_instruction_loss_does_not_fail_rooted_recall(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            base_xcfg = {
+                "4096": {
+                    "blocks": {"4096": [[4096, "90", "nop", ""]]},
+                    "outrefs": {},
+                    "inrefs": [],
+                    "metadata": {},
+                },
+                "8192": {
+                    "blocks": {"8192": [[8192, "90", "nop", ""], [8193, "c3", "ret", ""]]},
+                    "outrefs": {},
+                    "inrefs": [],
+                    "metadata": {},
+                },
+            }
+            pr_xcfg = {
+                "4096": {
+                    "blocks": {"4096": [[4096, "90", "nop", ""]]},
+                    "outrefs": {},
+                    "inrefs": [],
+                    "metadata": {},
+                }
+            }
+            for i in range(3):
+                _write_xcfg_report(root / f"base_{i}", "f0", base_xcfg, oep=4096)
+                _write_xcfg_report(root / f"pr_{i}", "f0", pr_xcfg, oep=4096)
+
+            self.assertEqual(self._run(root), 0)
+            model = json.loads((root / "cache" / "evaluation.json").read_text())
+            self.assertTrue(model["correctness"]["pass"])
+            self.assertEqual(len(model["correctness"]["instruction_regressions"]), 0)
+
+    def test_rooted_instruction_loss_still_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            base_xcfg = {
+                "4096": {
+                    "blocks": {"4096": [[4096, "e8fb0f0000", "call", "0x2000"], [4101, "c3", "ret", ""]]},
+                    "outrefs": {"4096": [8192]},
+                    "inrefs": [],
+                    "metadata": {},
+                },
+                "8192": {
+                    "blocks": {"8192": [[8192, "90", "nop", ""], [8193, "c3", "ret", ""]]},
+                    "outrefs": {},
+                    "inrefs": [4096],
+                    "metadata": {},
+                },
+            }
+            pr_xcfg = {
+                "4096": {
+                    "blocks": {"4096": [[4096, "e8fb0f0000", "call", "0x2000"], [4101, "c3", "ret", ""]]},
+                    "outrefs": {"4096": [8192]},
+                    "inrefs": [],
+                    "metadata": {},
+                }
+            }
+            for i in range(3):
+                _write_xcfg_report(root / f"base_{i}", "f0", base_xcfg, oep=4096)
+                _write_xcfg_report(root / f"pr_{i}", "f0", pr_xcfg, oep=4096)
+
+            self.assertEqual(self._run(root), 1)
+            model = json.loads((root / "cache" / "evaluation.json").read_text())
+            self.assertEqual(model["correctness"]["instruction_regressions"][0]["rooted_mode"], "seed-closure")
+
+    def test_seedless_reports_use_xref_rooted_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            base_xcfg = {
+                "8192": {
+                    "blocks": {"8192": [[8192, "90", "nop", ""], [8193, "c3", "ret", ""]]},
+                    "outrefs": {},
+                    "inrefs": [4096],
+                    "metadata": {},
+                },
+            }
+            pr_xcfg = {
+                "8192": {
+                    "blocks": {"8192": [[8192, "90", "nop", ""]]},
+                    "outrefs": {},
+                    "inrefs": [4096],
+                    "metadata": {},
+                },
+            }
+            for i in range(3):
+                _write_xcfg_report(root / f"base_{i}", "f0", base_xcfg)
+                _write_xcfg_report(root / f"pr_{i}", "f0", pr_xcfg)
+
+            self.assertEqual(self._run(root), 1)
+            model = json.loads((root / "cache" / "evaluation.json").read_text())
+            self.assertEqual(model["correctness"]["instruction_regressions"][0]["rooted_mode"], "xref-closure")
 
     def test_base_nondeterminism_exit_2(self):
         with tempfile.TemporaryDirectory() as d:
