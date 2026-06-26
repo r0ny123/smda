@@ -285,7 +285,30 @@ def _compute_rooted_metrics(disassembly, candidates):
     }
 
 
-def _remove_function(disassembly, fn_start):
+def _build_code_ref_reverse_index(disassembly):
+    """Build an exact reverse of code_refs_from (target -> {sources}) plus a grouping of
+    referenced targets by their owning function. Lets _remove_function drop inbound edges in
+    O(removed edges) instead of rescanning every source per removal (the quadratic hot path).
+
+    Built from code_refs_from directly (not code_refs_to, which is not guaranteed symmetric)
+    so the touched (source, target) edges match the original full-scan filter exactly.
+    """
+    reverse = {}
+    targets_by_fn = {}
+    ins2fn = disassembly.ins2fn
+    for src, targets in disassembly.code_refs_from.items():
+        for target in targets:
+            srcs = reverse.get(target)
+            if srcs is None:
+                reverse[target] = srcs = set()
+                owner = ins2fn.get(target)
+                if owner is not None:
+                    targets_by_fn.setdefault(owner, []).append(target)
+            srcs.add(src)
+    return reverse, targets_by_fn
+
+
+def _remove_function(disassembly, fn_start, ref_index=None):
     blocks = disassembly.functions.pop(fn_start, None)
     disassembly.function_borders.pop(fn_start, None)
     disassembly.function_symbols.pop(fn_start, None)
@@ -301,12 +324,28 @@ def _remove_function(disassembly, fn_start):
             for offset in range(size):
                 disassembly.code_map.pop(addr + offset, None)
                 disassembly.ins2fn.pop(addr + offset, None)
-    for src in list(disassembly.code_refs_from.keys()):
-        disassembly.code_refs_from[src] = {
-            target for target in disassembly.code_refs_from[src] if disassembly.ins2fn.get(target) != fn_start
-        }
-        if not disassembly.code_refs_from[src]:
-            disassembly.code_refs_from.pop(src, None)
+    # Drop inbound code-ref edges pointing at addresses still owned by this function.
+    # Equivalent to filtering every code_refs_from[src] by `ins2fn[target] != fn_start`, but
+    # reached through a prebuilt reverse index so the cost is O(removed edges) instead of
+    # O(functions-removed * all-refs) -- the quadratic form dominated large-binary runtime.
+    if ref_index is not None:
+        reverse, targets_by_fn = ref_index
+        candidate_targets = targets_by_fn.get(fn_start, ())
+    else:
+        reverse, _ = _build_code_ref_reverse_index(disassembly)
+        candidate_targets = [t for t in reverse if disassembly.ins2fn.get(t) == fn_start]
+    for target in candidate_targets:
+        # Only addresses whose ins2fn survived the instruction-byte pop above are still owned
+        # by fn_start; this mirrors the original per-target `ins2fn[target] == fn_start` test.
+        if disassembly.ins2fn.get(target) != fn_start:
+            continue
+        for src in reverse.get(target, ()):
+            refs = disassembly.code_refs_from.get(src)
+            if refs is None:
+                continue
+            refs.discard(target)
+            if not refs:
+                disassembly.code_refs_from.pop(src, None)
     disassembly.code_refs_to.pop(fn_start, None)
 
 
@@ -334,10 +373,13 @@ def apply_intel_report_policy(disassembler):
     trim_post_ret_padding(disassembly)
 
     sorted_targets = sorted(disassembly.code_refs_to)
+    # Reverse-index code refs once so orphan removal purges inbound edges in O(removed edges)
+    # rather than rescanning every source per removal (previously the quadratic hot path).
+    ref_index = _build_code_ref_reverse_index(disassembly)
     for fn_start in sorted(disassembly.functions.keys()):
         candidate = candidates.get(fn_start)
         if is_prologue_only_orphan(fn_start, disassembly, candidate, candidates, sorted_targets):
-            _remove_function(disassembly, fn_start)
+            _remove_function(disassembly, fn_start, ref_index)
 
     metrics = compute_connected_and_rooted_metrics(disassembly, candidates)
     disassembly.report_policy_metrics = metrics
