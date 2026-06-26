@@ -1,5 +1,6 @@
 import bisect
 import logging
+import os
 import re
 import struct
 
@@ -47,6 +48,8 @@ class FunctionCandidateManager:
         self._borders_dirty = True
         self._cached_borders = None
         self._cached_borders_starts = []
+        self._border_fmin_by_start = {}
+        self._border_cache_check = bool(os.environ.get("SMDA_BORDER_CACHE_CHECK"))
         self._max_fn_len = 0
         self._code_area_starts = []
         self._code_area_ends = []
@@ -488,18 +491,91 @@ class FunctionCandidateManager:
         return None
 
     def _get_sorted_borders(self):
-        if getattr(self, "_borders_dirty", True) or getattr(self, "_cached_borders", None) is None:
+        # The cache is maintained incrementally (see updateBorder / removeBorder / syncBorder)
+        # so it always equals sorted(function_borders) at every read. A full re-sort is only
+        # needed on bulk invalidation (_borders_dirty), first build, or — as a correctness
+        # backstop for any un-hooked mutation — when the function count diverges.
+        if (
+            getattr(self, "_borders_dirty", True)
+            or getattr(self, "_cached_borders", None) is None
+            or len(self._cached_borders) != len(self.disassembly.function_borders)
+        ):
             self._cached_borders = sorted(
                 [(fmin, fmax, start) for start, (fmin, fmax) in self.disassembly.function_borders.items()],
                 key=lambda x: x[0],
             )
             self._cached_borders_starts = [x[0] for x in self._cached_borders]
+            self._border_fmin_by_start = {start: fmin for (fmin, fmax, start) in self._cached_borders}
             if self._cached_borders:
                 self._max_fn_len = max(x[1] - x[0] for x in self._cached_borders)
             else:
                 self._max_fn_len = 0
             self._borders_dirty = False
+        if getattr(self, "_border_cache_check", False):
+            self._assertBorderCacheConsistent()
         return self._cached_borders
+
+    def _assertBorderCacheConsistent(self):
+        """Debug-only invariant check: the incremental cache must equal sorted(function_borders).
+
+        Enabled via SMDA_BORDER_CACHE_CHECK=1; consumers ignore tie order, so content equality
+        plus a sorted starts list is sufficient to guarantee identical results.
+        """
+        expected = {(fmin, fmax, start) for start, (fmin, fmax) in self.disassembly.function_borders.items()}
+        actual = {tuple(entry) for entry in self._cached_borders}
+        assert actual == expected, f"border cache drift: missing={expected - actual} extra={actual - expected}"
+        assert self._cached_borders_starts == sorted(self._cached_borders_starts), "border cache not sorted"
+        assert self._max_fn_len >= max((f - m for m, f, _ in self._cached_borders), default=0), (
+            "max_fn_len underestimate"
+        )
+
+    def _removeCachedBorder(self, start):
+        old_fmin = self._border_fmin_by_start.pop(start, None)
+        if old_fmin is None:
+            return
+        idx = bisect.bisect_left(self._cached_borders_starts, old_fmin)
+        n = len(self._cached_borders)
+        while idx < n and self._cached_borders_starts[idx] == old_fmin:
+            if self._cached_borders[idx][2] == start:
+                del self._cached_borders[idx]
+                del self._cached_borders_starts[idx]
+                return
+            idx += 1
+
+    def updateBorder(self, start, fmin, fmax):
+        """Incrementally reflect function_borders[start] = (fmin, fmax) in the sorted cache.
+
+        No-op while a full rebuild is pending; _get_sorted_borders rebuilds from scratch then.
+        Keeps the cache bit-identical to a full sorted(function_borders) rebuild, in O(log F).
+        """
+        if getattr(self, "_borders_dirty", True) or getattr(self, "_cached_borders", None) is None:
+            return
+        self._removeCachedBorder(start)
+        idx = bisect.bisect_left(self._cached_borders_starts, fmin)
+        self._cached_borders.insert(idx, (fmin, fmax, start))
+        self._cached_borders_starts.insert(idx, fmin)
+        self._border_fmin_by_start[start] = fmin
+        # _max_fn_len is a grow-only upper bound (used only as an early-break limit, so an
+        # over-estimate stays correct); the next full rebuild recomputes it exactly.
+        span = fmax - fmin
+        if span > self._max_fn_len:
+            self._max_fn_len = span
+
+    def removeBorder(self, start):
+        """Incrementally drop a function from the sorted cache (no-op while rebuild pending)."""
+        if getattr(self, "_borders_dirty", True) or getattr(self, "_cached_borders", None) is None:
+            return
+        self._removeCachedBorder(start)
+
+    def syncBorder(self, start):
+        """Reconcile the cache for a single function after analysis: upsert if present, else drop."""
+        if getattr(self, "_borders_dirty", True) or getattr(self, "_cached_borders", None) is None:
+            return
+        border = self.disassembly.function_borders.get(start)
+        if border is None:
+            self._removeCachedBorder(start)
+        else:
+            self.updateBorder(start, border[0], border[1])
 
     def getContainingFunctionStart(self, addr):
         """Return the tightest function whose recorded borders contain addr."""

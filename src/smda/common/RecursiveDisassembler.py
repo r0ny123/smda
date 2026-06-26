@@ -230,6 +230,8 @@ class RecursiveDisassembler:
         owner_state.code_refs = set()
         owner_state.data_refs = set()
         owner_state.revertAnalysis()
+        if hasattr(self.fc_manager, "removeBorder"):
+            self.fc_manager.removeBorder(owner_fn)
         self.fc_manager.updateAnalysisAborted(
             owner_fn, f"Reverted: absorbed by tailcall candidate 0x{current_start_addr:08x}"
         )
@@ -383,16 +385,16 @@ class RecursiveDisassembler:
                 self.tailcall_analyzer.finalizeFunction(state)
             self.fc_manager.updateAnalysisFinished(start_addr)
             self.fc_manager.updateCandidates(state)
-            if hasattr(self.fc_manager, "_borders_dirty"):
-                self.fc_manager._borders_dirty = True
+            if hasattr(self.fc_manager, "syncBorder"):
+                self.fc_manager.syncBorder(start_addr)
             return state
         if analysis_result and self.config.RESOLVE_REGISTER_CALLS:
             self.indcall_analyzer.resolveRegisterCalls(state)
             self.tailcall_analyzer.finalizeFunction(state)
         self.fc_manager.updateAnalysisFinished(start_addr)
         self.fc_manager.updateCandidates(state)
-        if hasattr(self.fc_manager, "_borders_dirty"):
-            self.fc_manager._borders_dirty = True
+        if hasattr(self.fc_manager, "syncBorder"):
+            self.fc_manager.syncBorder(start_addr)
         return state
 
     def _reset_gap_recovery_budget(self):
@@ -430,13 +432,28 @@ class RecursiveDisassembler:
     def _iter_interior_hole_starts(self, fmin, interval_end, max_scan_bytes):
         code_map = self.disassembly.code_map
         data_map = self.disassembly.data_map
+        instructions = self.disassembly.instructions
         addr = fmin
         end = interval_end
         scanned = 0
         while addr < end and scanned < max_scan_bytes:
+            # Skip the mapped run (function body). Stride a whole instruction at a time
+            # over code_map (every byte of an instruction maps to its start) instead of
+            # byte-by-byte; this lands on the exact same first-unmapped address and
+            # advances `scanned` by the identical byte count.
             while addr < end and (addr in code_map or addr in data_map):
-                addr += 1
-                scanned += 1
+                if addr in code_map:
+                    ins_start = code_map[addr]
+                    meta = instructions.get(ins_start)
+                    step = (ins_start + meta[1] - addr) if meta is not None else 1
+                    if step < 1:
+                        step = 1
+                else:
+                    step = 1
+                if addr + step > end:
+                    step = end - addr
+                addr += step
+                scanned += step
             if addr >= end or scanned >= max_scan_bytes:
                 break
             yield addr
@@ -534,8 +551,8 @@ class RecursiveDisassembler:
         fn_max = max(ins[0] + ins[1] for ins in ins_by_addr.values())
         self.disassembly.function_borders[parent_start] = (fn_min, fn_max)
         self.disassembly.functions[parent_start] = state.getBlocks()
-        if hasattr(self.fc_manager, "_borders_dirty"):
-            self.fc_manager._borders_dirty = True
+        if hasattr(self.fc_manager, "updateBorder"):
+            self.fc_manager.updateBorder(parent_start, fn_min, fn_max)
 
     def _runGapRecoveryPasses(self, cbAnalysisTimeout=None):
         self._reset_gap_recovery_budget()
@@ -663,6 +680,8 @@ class RecursiveDisassembler:
                 if child_blocks:
                     all_child_blocks.extend(child_blocks)
                 self.disassembly.function_borders.pop(child_start, None)
+                if hasattr(self.fc_manager, "removeBorder"):
+                    self.fc_manager.removeBorder(child_start)
                 self.disassembly.function_symbols.pop(child_start, None)
                 self.disassembly.recursive_functions.discard(child_start)
                 self.disassembly.leaf_functions.discard(child_start)

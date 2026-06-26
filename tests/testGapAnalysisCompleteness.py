@@ -150,6 +150,62 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         self.assertFalse(candidate.analysis_aborted)
         self.assertTrue(candidate.isFinished())
 
+    def test_incremental_border_cache_matches_full_rebuild(self):
+        # The sorted-borders cache is maintained incrementally during gap recovery
+        # (updateBorder / removeBorder / syncBorder) instead of being re-sorted on every
+        # mutation. It must stay bit-identical to a from-scratch sorted(function_borders),
+        # and containment lookups must match a brute-force search after every change.
+        manager = FunctionCandidateManager(SmdaConfig())
+        borders = {}
+        manager.disassembly = type("D", (), {"function_borders": borders})()
+
+        def brute_contains(addr):
+            matches = [
+                (fmax - fmin, start) for start, (fmin, fmax) in borders.items() if start != addr and fmin <= addr < fmax
+            ]
+            return min(matches)[1] if matches else None
+
+        def assert_consistent():
+            cached = manager._get_sorted_borders()
+            self.assertEqual(
+                {tuple(e) for e in cached},
+                {(fmin, fmax, start) for start, (fmin, fmax) in borders.items()},
+            )
+            starts = [e[0] for e in cached]
+            self.assertEqual(starts, sorted(starts))
+            self.assertGreaterEqual(manager._max_fn_len, max((f - m for m, f, _ in cached), default=0))
+            for probe in (0x1008, 0x1040, 0x1055, 0x1200, 0x900):
+                self.assertEqual(manager.getContainingFunctionStart(probe), brute_contains(probe))
+
+        # seed + initial full build
+        for start in (0x1000, 0x1100, 0x1050):
+            borders[start] = (start, start + 0x20)
+        manager._borders_dirty = True
+        assert_consistent()
+
+        # incremental insert of a function that contains an earlier probe
+        borders[0x1004] = (0x1004, 0x1080)
+        manager.updateBorder(0x1004, 0x1004, 0x1080)
+        assert_consistent()
+
+        # resize-grow (a re-merge extends the parent's fmax)
+        borders[0x1000] = (0x1000, 0x1060)
+        manager.updateBorder(0x1000, 0x1000, 0x1060)
+        assert_consistent()
+
+        # remove a function (pruned interior child / reverted gap function)
+        del borders[0x1050]
+        manager.removeBorder(0x1050)
+        assert_consistent()
+
+        # syncBorder upsert then drop, mirroring analyzeFunction finalize vs abort
+        borders[0x1200] = (0x1200, 0x1240)
+        manager.syncBorder(0x1200)
+        assert_consistent()
+        del borders[0x1200]
+        manager.syncBorder(0x1200)
+        assert_consistent()
+
 
 if __name__ == "__main__":
     unittest.main()
