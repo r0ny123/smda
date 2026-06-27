@@ -47,6 +47,10 @@ class SmdaConfig:
     GAP_SMALL_UNMAPPED_MIN_BYTES = 64
     GAP_SMALL_UNMAPPED_ONLY_WHEN_FUNCTIONS_BELOW = 3000
     GAP_UNMAPPED_CODE_REF_TARGET_LIMIT = 512
+    GAP_INTERIOR_CODE_REF_SPLIT_LIMIT = 512
+    GAP_INTERIOR_CODE_REF_SPLIT_MIN_PARENT_SPAN = 0x10000
+    GAP_LEA_RIP_RELATIVE_TARGET_LIMIT = 256
+    GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN = 0x10000
     # backstops against memory usage explosion during candidate identification on pathological/junk samples
     # maximum number of function candidates to track; 0 == unlimited. Normal binaries have orders of magnitude fewer.
     MAX_FUNCTION_CANDIDATES = 200000

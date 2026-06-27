@@ -1,6 +1,7 @@
 import unittest
 
 from smda.common.BinaryInfo import BinaryInfo
+from smda.DisassemblyResult import DisassemblyResult
 from smda.intel.CfgEdgeValidator import CfgEdgeValidator
 from smda.intel.FunctionCandidate import FunctionCandidate
 from smda.intel.FunctionCandidateManager import FunctionCandidateManager
@@ -136,6 +137,156 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         )
         self.assertGreaterEqual(completeness["recall"], 0.99)
         self.assertIn(shared, parent_starts)
+
+    def test_interior_jmp_ref_target_splits_large_mapped_parent(self):
+        base = 0x10000
+        prologue = b"\x55\x48\x89\xe5"
+        jmp_site = base + 0x500
+        callee = base + 0x12000
+        rel = callee - (jmp_site + 5)
+        buf = (
+            prologue
+            + b"\x90" * (jmp_site - base - len(prologue))
+            + b"\xe9"
+            + rel.to_bytes(4, "little", signed=True)
+            + b"\x90" * (callee - jmp_site - 5)
+            + prologue
+            + b"\x5d\xc3"
+        )
+        binary_info = BinaryInfo(buf)
+        binary_info.base_addr = base
+        binary_info.bitness = 64
+        binary_info.architecture = "intel"
+        binary_info.code_areas = [(base, base + len(buf))]
+        binary_info.oep = 0
+        result = IntelDisassembler(SmdaConfig()).analyzeBuffer(binary_info, cbAnalysisTimeout=None)
+        self.assertIn(base, result.functions)
+        self.assertIn(callee, result.functions)
+        self.assertEqual(result.ins2fn.get(callee), callee)
+
+    def test_unmapped_call_ref_recovers_hole_in_large_parent(self):
+        base = 0x10000
+        prologue = b"\x55\x48\x89\xe5"
+        call_site = base + 0x1000
+        hole_fn = base + 0x5001
+        after_hole = base + 0x6000
+        rel = hole_fn - (call_site + 5)
+        buf = (
+            prologue
+            + b"\x90" * (call_site - base - len(prologue))
+            + b"\xe8"
+            + rel.to_bytes(4, "little", signed=True)
+            + b"\x90" * (hole_fn - (call_site + 5))
+            + prologue
+            + b"\x5d\xc3"
+            + b"\x90" * (after_hole - (hole_fn + len(prologue) + 2))
+            + b"\xc3"
+            + b"\x90" * (base + 0x12000 - after_hole - 1)
+            + b"\xc3"
+        )
+        binary_info = BinaryInfo(buf)
+        binary_info.base_addr = base
+        binary_info.bitness = 64
+        binary_info.architecture = "intel"
+        binary_info.code_areas = [(base, base + len(buf))]
+        binary_info.oep = 0
+        result = IntelDisassembler(SmdaConfig()).analyzeBuffer(binary_info, cbAnalysisTimeout=None)
+        self.assertIn(base, result.functions)
+        self.assertIn(hole_fn, result.functions)
+
+    def test_lea_rip_relative_recovers_unmapped_hole_in_large_parent(self):
+        base = 0x10000
+        prologue = b"\x55\x48\x89\xe5"
+        lea_site = base + 0x1000
+        hole_fn = base + 0x5001
+        after_hole = base + 0x6000
+        rel = hole_fn - (lea_site + 7)
+        buf = (
+            prologue
+            + b"\x90" * (lea_site - base - len(prologue))
+            + b"\x48\x8d\x0d"
+            + rel.to_bytes(4, "little", signed=True)
+            + b"\xe9"
+            + (after_hole - (lea_site + 7) - 5).to_bytes(4, "little", signed=True)
+            + b"\x90" * (hole_fn - (lea_site + 7) - 5)
+            + prologue
+            + b"\x5d\xc3"
+            + b"\x90" * (base + 0x12000 - after_hole)
+            + b"\xc3"
+        )
+        binary_info = BinaryInfo(buf)
+        binary_info.base_addr = base
+        binary_info.bitness = 64
+        binary_info.architecture = "intel"
+        binary_info.code_areas = [(base, base + len(buf))]
+        binary_info.oep = 0
+        result = IntelDisassembler(SmdaConfig()).analyzeBuffer(binary_info, cbAnalysisTimeout=None)
+        self.assertIn(base, result.functions)
+        self.assertIn(hole_fn, result.functions)
+
+    def test_failed_interior_split_restores_parent_code_refs(self):
+        class StubCandidateManager:
+            def addCandidate(self, _addr, reference_source=None):
+                self.reference_source = reference_source
+
+            def updateBorder(self, _start, _fmin, _fmax):
+                return
+
+        def make_disassembler(parent, split, ref_from, instructions):
+            disassembler = IntelDisassembler(SmdaConfig())
+            result = DisassemblyResult()
+            result.functions[parent] = [instructions]
+            result.function_borders[parent] = (
+                min(ins[0] for ins in instructions),
+                max(ins[0] + ins[1] for ins in instructions),
+            )
+            result.instructions = {ins[0]: (ins[2], ins[1]) for ins in instructions}
+            for addr, size, *_rest in instructions:
+                for offset in range(size):
+                    result.code_map[addr + offset] = addr
+                    result.ins2fn[addr + offset] = parent
+            result.addCodeRefs(ref_from, split)
+            disassembler.disassembly = result
+            disassembler.fc_manager = StubCandidateManager()
+            disassembler._gap_extra_analyses = 0
+            disassembler._gap_recovery_limit = 1
+            disassembler.analyzeFunction = lambda _addr: None
+            return disassembler, result
+
+        parent = 0x1000
+        split = 0x1010
+        ref_from = 0x1004
+        disassembler, result = make_disassembler(
+            parent,
+            split,
+            ref_from,
+            [
+                (parent, 1, "push", "", b"\x55"),
+                (ref_from, 5, "call", "", b"\xe8\x07\x00\x00\x00"),
+                (split, 1, "push", "", b"\x55"),
+            ],
+        )
+
+        self.assertFalse(disassembler._split_function_at_interior_target(parent, split, ref_from))
+        self.assertEqual(result.code_refs_from, {ref_from: {split}})
+        self.assertEqual(result.code_refs_to, {split: {ref_from}})
+
+        parent = 0x2000
+        split = 0x1FF0
+        ref_from = 0x1FF5
+        disassembler, result = make_disassembler(
+            parent,
+            split,
+            ref_from,
+            [
+                (split, 1, "push", "", b"\x55"),
+                (ref_from, 5, "call", "", b"\xe8\xf6\xff\xff\xff"),
+            ],
+        )
+
+        self.assertFalse(disassembler._split_function_at_interior_target(parent, split, ref_from))
+        self.assertEqual(result.code_refs_from, {ref_from: {split}})
+        self.assertEqual(result.code_refs_to, {split: {ref_from}})
 
     def test_recovered_function_start_collision_is_not_recorded_as_failure(self):
         config = SmdaConfig()

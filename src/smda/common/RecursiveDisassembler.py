@@ -625,6 +625,10 @@ class RecursiveDisassembler:
                     self._recoverPltStubs(cbAnalysisTimeout)
                 if self._gap_budget_remaining():
                     self._recoverUnmappedCodeRefTargets(cbAnalysisTimeout)
+                if self._gap_budget_remaining():
+                    self._recoverLeaRipRelativeCodeTargets(cbAnalysisTimeout)
+                if self._gap_budget_remaining():
+                    self._recoverInteriorCodeRefSplits(cbAnalysisTimeout)
                 LOGGER.debug("After interior gap recovery, functions: %d", len(self.disassembly.functions))
             if pass_index + 1 < max_passes and hasattr(self.fc_manager, "refreshFunctionGaps"):
                 before = len(self.disassembly.code_map)
@@ -633,9 +637,318 @@ class RecursiveDisassembler:
                 if remaining == 0 or len(self.disassembly.code_map) == before:
                     break
 
-    def _recoverUnmappedCodeRefTargets(self, cbAnalysisTimeout=None):
-        if not hasattr(self.fc_manager, "addReferenceCandidate"):
+    def _instruction_mnemonic(self, addr):
+        meta = self.disassembly.instructions.get(addr)
+        return meta[0] if meta else ""
+
+    def _instruction_mnemonic_base(self, addr):
+        return self._instruction_mnemonic(addr).split(" ")[-1]
+
+    def _is_call_or_jmp_insn(self, addr):
+        from smda.intel.definitions import CALL_INS, JMP_INS
+
+        mnemonic = self._instruction_mnemonic_base(addr)
+        return mnemonic in CALL_INS or mnemonic in JMP_INS
+
+    def _purge_code_refs_for_addr(self, addr):
+        for target in list(self.disassembly.code_refs_from.get(addr, ())):
+            refs_to = self.disassembly.code_refs_to.get(target)
+            if refs_to is not None:
+                refs_to.discard(addr)
+                if not refs_to:
+                    self.disassembly.code_refs_to.pop(target, None)
+        self.disassembly.code_refs_from.pop(addr, None)
+        for src in list(self.disassembly.code_refs_to.get(addr, ())):
+            refs_from = self.disassembly.code_refs_from.get(src)
+            if refs_from is not None:
+                refs_from.discard(addr)
+                if not refs_from:
+                    self.disassembly.code_refs_from.pop(src, None)
+        self.disassembly.code_refs_to.pop(addr, None)
+
+    def _collect_owned_instruction_map(self, fn_start, max_addr=None):
+        ins_by_addr = {}
+        for block in self.disassembly.functions.get(fn_start, []):
+            for ins in block:
+                if max_addr is not None and ins[0] >= max_addr:
+                    continue
+                if self.disassembly.ins2fn.get(ins[0]) != fn_start:
+                    continue
+                ins_by_addr[ins[0]] = ins
+        return ins_by_addr
+
+    def _clear_owned_instructions_from(self, fn_start, min_addr, max_addr=None):
+        for addr in sorted(
+            addr for addr in self.disassembly.instructions if self.disassembly.ins2fn.get(addr) == fn_start
+        ):
+            if addr < min_addr:
+                continue
+            if max_addr is not None and addr >= max_addr:
+                continue
+            self._purge_code_refs_for_addr(addr)
+            _mnemonic, size = self.disassembly.instructions.pop(addr)
+            for byte_offset in range(size):
+                mapped = addr + byte_offset
+                self.disassembly.code_map.pop(mapped, None)
+                self.disassembly.ins2fn.pop(mapped, None)
+
+    def _snapshot_code_refs(self):
+        return (
+            {addr: set(targets) for addr, targets in self.disassembly.code_refs_from.items()},
+            {addr: set(sources) for addr, sources in self.disassembly.code_refs_to.items()},
+        )
+
+    def _restore_code_refs(self, refs_snapshot):
+        refs_from, refs_to = refs_snapshot
+        self.disassembly.code_refs_from = {addr: set(targets) for addr, targets in refs_from.items()}
+        self.disassembly.code_refs_to = {addr: set(sources) for addr, sources in refs_to.items()}
+
+    def _interior_split_target_has_prologue(self, target):
+        cache = getattr(self, "_interior_prologue_cache", None)
+        if cache is None:
+            cache = {}
+            self._interior_prologue_cache = cache
+        if target in cache:
+            return cache[target]
+        from smda.intel.FunctionCandidate import FunctionCandidate
+
+        binary_info = self.disassembly.binary_info
+        if not binary_info:
+            cache[target] = False
+            return False
+        cache[target] = FunctionCandidate(binary_info, target).hasCommonFunctionStart()
+        return cache[target]
+
+    def _preflight_interior_split_target(self, target, owner):
+        if target in self.disassembly.functions:
+            return False
+        if target not in self.disassembly.code_map:
+            return False
+        return self.disassembly.ins2fn.get(target) == owner
+
+    def _interior_code_refs_are_parent_local(self, owner, ref_froms):
+        borders = self.disassembly.function_borders.get(owner)
+        if not borders or not ref_froms:
+            return False
+        fmin, fmax = borders
+        return all(fmin <= ref_from < fmax for ref_from in ref_froms)
+
+    def _should_split_interior_code_ref_target(self, target, owner, ref_froms):
+        if target in self.disassembly.functions:
+            return False
+        if self.disassembly.ins2fn.get(target) != owner:
+            return False
+        borders = self.disassembly.function_borders.get(owner)
+        if not borders:
+            return False
+        parent_span = borders[1] - borders[0]
+        min_parent_span = getattr(self.config, "GAP_INTERIOR_CODE_REF_SPLIT_MIN_PARENT_SPAN", 0x10000)
+        if parent_span <= 16:
+            return False
+        from smda.intel.definitions import CALL_INS, JMP_INS
+
+        refs_parent_local = self._interior_code_refs_are_parent_local(owner, ref_froms)
+        has_call_ref = any(self._instruction_mnemonic_base(ref_from) in CALL_INS for ref_from in ref_froms)
+        has_jmp_ref = any(self._instruction_mnemonic_base(ref_from) in JMP_INS for ref_from in ref_froms)
+        if not has_call_ref and not has_jmp_ref:
+            return False
+        if refs_parent_local and parent_span <= min_parent_span:
+            return False
+        if has_jmp_ref and not has_call_ref:
+            if parent_span <= min_parent_span:
+                return False
+            return self._interior_split_target_has_prologue(target)
+        if refs_parent_local:
+            return self._interior_split_target_has_prologue(target)
+        # External call into a large merged parent: split without prologue (IDA-style nested entry).
+        return has_call_ref
+
+    def _split_function_at_interior_target(self, parent_start, split_addr, reference_source, cbAnalysisTimeout=None):
+        if split_addr in self.disassembly.functions or split_addr not in self.disassembly.code_map:
+            return False
+        if self.disassembly.ins2fn.get(split_addr) != parent_start:
+            return False
+        if cbAnalysisTimeout and cbAnalysisTimeout():
+            return False
+        if not self._gap_budget_remaining():
+            return False
+        full_parent_ins = self._collect_owned_instruction_map(parent_start)
+        if not full_parent_ins:
+            return False
+        code_refs_snapshot = self._snapshot_code_refs()
+        if parent_start <= split_addr:
+            parent_ins = self._collect_owned_instruction_map(parent_start, max_addr=split_addr)
+            if not parent_ins:
+                return False
+            self._clear_owned_instructions_from(parent_start, split_addr)
+            self._rebuild_merged_function(parent_start, parent_ins)
+        else:
+            # The containing border can start above an interior xref target.
+            self._clear_owned_instructions_from(parent_start, split_addr, parent_start)
+            parent_ins = self._collect_owned_instruction_map(parent_start)
+            if not parent_ins:
+                self._rebuild_merged_function(parent_start, full_parent_ins)
+                self._restore_code_refs(code_refs_snapshot)
+                return False
+            self._rebuild_merged_function(parent_start, parent_ins)
+        self.fc_manager.addCandidate(split_addr, reference_source=reference_source)
+        if not self._consume_gap_budget():
+            self._rebuild_merged_function(parent_start, full_parent_ins)
+            self._restore_code_refs(code_refs_snapshot)
+            return False
+        self.analyzeFunction(split_addr)
+        if split_addr not in self.disassembly.functions:
+            self._rebuild_merged_function(parent_start, full_parent_ins)
+            self._restore_code_refs(code_refs_snapshot)
+            return False
+        return True
+
+    def _recoverInteriorCodeRefSplits(self, cbAnalysisTimeout=None):
+        if not self._intelInteriorGapEnabled():
             return
+        self._interior_prologue_cache = {}
+
+        split_jobs = []
+        pending_targets = {}
+        for addr_from, targets in self.disassembly.code_refs_from.items():
+            if not self._is_call_or_jmp_insn(addr_from):
+                continue
+            for target in targets:
+                if target in self.disassembly.functions:
+                    continue
+                owner = self.disassembly.ins2fn.get(target)
+                if owner is None or owner == target:
+                    continue
+                if target not in pending_targets:
+                    ref_froms = self.disassembly.code_refs_to.get(target)
+                    if not ref_froms:
+                        continue
+                    pending_targets[target] = (owner, ref_froms)
+        for target, (owner, ref_froms) in pending_targets.items():
+            if not self._should_split_interior_code_ref_target(target, owner, ref_froms):
+                continue
+            if not self.fc_manager._passesCodeFilter(target):
+                continue
+            split_jobs.append((target, owner, min(ref_froms)))
+
+        target_limit = getattr(self.config, "GAP_INTERIOR_CODE_REF_SPLIT_LIMIT", 512)
+        if target_limit <= 0:
+            return
+        for target, owner, reference_source in sorted(split_jobs, key=lambda job: job[0])[:target_limit]:
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            if not self._gap_budget_remaining():
+                break
+            if not self._preflight_interior_split_target(target, owner):
+                continue
+            self._split_function_at_interior_target(owner, target, reference_source, cbAnalysisTimeout)
+
+    def _resolve_lea_rip_relative_target(self, insn_addr):
+        insn_meta = self.disassembly.instructions.get(insn_addr)
+        if not insn_meta or insn_meta[0] != "lea":
+            return None
+        insn_size = insn_meta[1]
+        for ins in self.capstone.disasm_lite(self._getDisasmWindowBuffer(insn_addr), insn_addr):
+            if ins[0] != insn_addr:
+                continue
+            if "rip" not in ins[3].lower():
+                return None
+            return insn_addr + insn_size + self.getReferencedAddr(ins[3])
+        return None
+
+    def _collect_lea_code_pointer_targets(self, target_limit):
+        lea_targets = {}
+        for insn_addr, (mnemonic, _insn_size) in self.disassembly.instructions.items():
+            if mnemonic != "lea":
+                continue
+            target = self._resolve_lea_rip_relative_target(insn_addr)
+            if target is None or not self.disassembly.isAddrWithinMemoryImage(target):
+                continue
+            if not self.fc_manager._passesCodeFilter(target):
+                continue
+            refs = lea_targets.get(target)
+            if refs is None:
+                if len(lea_targets) >= target_limit:
+                    continue
+                refs = set()
+                lea_targets[target] = refs
+            refs.add(insn_addr)
+        return lea_targets
+
+    def _get_enclosing_parent_for_gap_addr(self, addr, ref_froms=None):
+        matches = []
+        for start, (fmin, fmax) in self.disassembly.function_borders.items():
+            if fmin <= addr < fmax:
+                matches.append((fmax - fmin, start, fmin, fmax))
+        if not matches:
+            return None
+        if ref_froms:
+            local = [
+                (span, start)
+                for span, start, fmin, fmax in matches
+                if any(fmin <= ref_from < fmax for ref_from in ref_froms)
+            ]
+            if local:
+                return max(local)[1]
+        return max(matches)[1]
+
+    def _get_lea_recovery_parent(self, target, ref_froms):
+        parent = self._get_enclosing_parent_for_gap_addr(target, ref_froms)
+        if parent is not None:
+            return parent
+        standard_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
+        for ref_from in sorted(ref_froms):
+            candidate = self._get_enclosing_parent_for_gap_addr(ref_from)
+            if candidate is None:
+                continue
+            borders = self.disassembly.function_borders.get(candidate)
+            if borders and borders[1] - borders[0] > standard_span:
+                return candidate
+        return None
+
+    def _should_recover_lea_code_pointer_target(self, target, ref_froms):
+        if target in self.disassembly.functions:
+            return False
+        if not self._interior_split_target_has_prologue(target):
+            return False
+        standard_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
+        parent = self._get_lea_recovery_parent(target, ref_froms)
+        if parent is None:
+            return False
+        borders = self.disassembly.function_borders.get(parent)
+        if not borders:
+            return False
+        parent_span = borders[1] - borders[0]
+        if parent_span <= 16:
+            return False
+        if target in self.disassembly.code_map or target in self.disassembly.data_map:
+            return False
+        return parent_span > standard_span
+
+    def _recoverLeaRipRelativeCodeTargets(self, cbAnalysisTimeout=None):
+        if not self._intelInteriorGapEnabled():
+            return
+        self._interior_prologue_cache = getattr(self, "_interior_prologue_cache", {})
+        target_limit = getattr(self.config, "GAP_LEA_RIP_RELATIVE_TARGET_LIMIT", 256)
+        if target_limit <= 0:
+            return
+        lea_targets = self._collect_lea_code_pointer_targets(target_limit)
+        for target, ref_froms in sorted(lea_targets.items(), key=lambda item: item[0]):
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            if not self._gap_budget_remaining():
+                break
+            if not self._should_recover_lea_code_pointer_target(target, ref_froms):
+                continue
+            if target in self.disassembly.code_map or target in self.disassembly.data_map:
+                continue
+            reference_source = min(ref_froms)
+            self.fc_manager.addReferenceCandidate(target, reference_source)
+            if not self._consume_gap_budget():
+                break
+            self.analyzeFunction(target)
+
+    def _unmapped_code_ref_targets(self):
         targets = set()
         for target in self.disassembly.code_refs_to:
             if target in self.disassembly.code_map or target in self.disassembly.data_map:
@@ -645,7 +958,31 @@ class RecursiveDisassembler:
             if not self.fc_manager._passesCodeFilter(target):
                 continue
             targets.add(target)
+        return targets
+
+    def _recoverUnmappedCodeRefTargets(self, cbAnalysisTimeout=None):
+        if not hasattr(self.fc_manager, "addReferenceCandidate"):
+            return
+        if not self._intelInteriorGapEnabled():
+            targets = self._unmapped_code_ref_targets()
+        else:
+            self._interior_prologue_cache = getattr(self, "_interior_prologue_cache", {})
+            standard_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
+            targets = set()
+            for target in self._unmapped_code_ref_targets():
+                ref_froms = self.disassembly.code_refs_to.get(target)
+                if not ref_froms or not any(self._is_call_or_jmp_insn(ref_from) for ref_from in ref_froms):
+                    continue
+                parent = self.fc_manager.getContainingFunctionStart(target)
+                if parent is not None:
+                    borders = self.disassembly.function_borders.get(parent)
+                    parent_span = borders[1] - borders[0] if borders else 0
+                    if parent_span > standard_span and not self._interior_split_target_has_prologue(target):
+                        continue
+                targets.add(target)
         target_limit = getattr(self.config, "GAP_UNMAPPED_CODE_REF_TARGET_LIMIT", 512)
+        if target_limit <= 0:
+            return
         for target in sorted(targets)[:target_limit]:
             if cbAnalysisTimeout and cbAnalysisTimeout():
                 break
@@ -703,7 +1040,8 @@ class RecursiveDisassembler:
         if not state.instructions:
             return
         parent_borders = self.disassembly.function_borders.get(parent_start)
-        if parent_borders is not None and parent_borders[1] - parent_borders[0] > 0x10000:
+        standard_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
+        if parent_borders is not None and parent_borders[1] - parent_borders[0] > standard_span:
             if state.num_blocks_analyzed:
                 state._finalizeRegularAnalysis()
             return
@@ -718,24 +1056,36 @@ class RecursiveDisassembler:
             ins_by_addr[ins[0]] = ins
         self._rebuild_merged_function(parent_start, ins_by_addr)
 
-    def _fillInteriorFunctionHoles(self, cbAnalysisTimeout=None):
+    def _fillInteriorFunctionHoles(
+        self,
+        cbAnalysisTimeout=None,
+        max_function_span=None,
+        min_function_span=0,
+        max_attempts=None,
+        max_scan_bytes=None,
+    ):
         max_rounds = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_ROUNDS", 2)
-        max_attempts = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_ATTEMPTS_PER_PASS", 256)
-        max_scan = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_SCAN_BYTES", 4096)
+        if max_attempts is None:
+            max_attempts = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_ATTEMPTS_PER_PASS", 256)
+        if max_scan_bytes is None:
+            max_scan_bytes = getattr(self.config, "GAP_INTERIOR_HOLE_MAX_SCAN_BYTES", 4096)
+        if max_function_span is None:
+            max_function_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
         attempts = 0
         for _round in range(max_rounds):
             if not self._gap_budget_remaining():
                 break
             progress = False
             for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
-                if fmax - fmin > 0x10000:
+                span = fmax - fmin
+                if span > max_function_span or span <= min_function_span:
                     continue
                 interval_end = fmax
                 if hasattr(self.fc_manager, "_gapIntervalForAddr"):
                     interval = self.fc_manager._gapIntervalForAddr(fmax - 1)
                     if interval is not None:
                         interval_end = interval[1]
-                for hole_start in self._iter_interior_hole_starts(fmin, interval_end, max_scan):
+                for hole_start in self._iter_interior_hole_starts(fmin, interval_end, max_scan_bytes):
                     if attempts >= max_attempts or not self._gap_budget_remaining():
                         return
                     if self.fc_manager.getInteriorExtensionParent(hole_start) != fn_start:
