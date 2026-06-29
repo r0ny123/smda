@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -147,63 +148,183 @@ def getMalpediaFilePath(input_path):
     return malpedia_filepath
 
 
+def getBenchmarkMode(filepath, filename):
+    if "elf." in filepath and ("x86" in filepath or "x64" in filepath) and re.search(unpacked_file_pattern, filename):
+        return "file"
+    if "win." in filepath and re.search(unpacked_file_pattern, filename):
+        return "file"
+    if re.search(dump_file_pattern, filename):
+        return "dump"
+    return None
+
+
+def buildTargetQueue(malpedia_path):
+    input_queue = []
+    skipped = {
+        "non_native": 0,
+        "module": 0,
+        "unsupported": 0,
+        "native_errors": 0,
+    }
+    identifier = NativeCodeIdentifier()
+
+    for root, _subdir, files in sorted(os.walk(malpedia_path)):
+        if ".git" in root:
+            continue
+        for filename in sorted(files):
+            if not (re.search(unpacked_file_pattern, filename) or re.search(dump_file_pattern, filename)):
+                continue
+
+            filepath = root + os.sep + filename
+            try:
+                if not identifier.isNativeCode(filepath):
+                    skipped["non_native"] += 1
+                    continue
+            except Exception:
+                skipped["native_errors"] += 1
+                print("RunTimeError, we skip!")
+                print("smda: " + str(filename))
+                traceback.print_exc()
+                continue
+
+            malpedia_relative_path = getMalpediaFilePath(filepath)
+            in_family_path = os.sep.join(malpedia_relative_path.split(os.sep)[1:])
+            if in_family_path.startswith("module"):
+                skipped["module"] += 1
+                continue
+
+            input_mode = getBenchmarkMode(filepath, filename)
+            if not input_mode:
+                skipped["unsupported"] += 1
+                continue
+
+            family = getFamilyName(filepath)
+            input_queue.append(
+                {
+                    "base_addr": parseBaseAddrFromArgs(filename),
+                    "bitness": getBitnessFromFilename(filename),
+                    "family": family,
+                    "filename": filename,
+                    "filepath": filepath,
+                    "input_mode": input_mode,
+                    "malpedia_relative_path": malpedia_relative_path,
+                    # Family-relative stem keeps reports unique across family folders that reuse
+                    # the same dump/sample basename (e.g. dump_0x00400000).
+                    "report_stem": os.path.relpath(filepath, malpedia_path).replace(os.sep, "_"),
+                    "version": getSampleVersion(filepath, family),
+                }
+            )
+
+    return input_queue, skipped
+
+
+def resolveWorkerCount():
+    explicit_workers = os.environ.get("SMDA_BENCH_WORKERS")
+    if explicit_workers:
+        try:
+            workers = int(explicit_workers)
+        except ValueError as exc:
+            raise RuntimeError("SMDA_BENCH_WORKERS must be an integer") from exc
+    elif os.environ.get("SMDA_BENCH_LOW_NOISE") == "1":
+        workers = 1
+    else:
+        workers = cpu_count() or 1
+    return max(1, min(workers, 8))
+
+
 def work(input_element):
     # Resume + output are keyed on the family-relative stem (not the bare basename) so
     # same-named samples in different family folders do not collide / overwrite each other.
     REPORT_STEM = input_element["report_stem"]
     if REPORT_STEM + ".smda" in input_element["finished_reports"]:
         print("Skipping file {}".format(input_element["filepath"]))
-        return
+        return "skipped"
     REPORT = None
     INPUT_FILEPATH = input_element["filepath"]
     INPUT_FILENAME = input_element["filename"]
     try:
-        identifier = NativeCodeIdentifier()
-        if not identifier.isNativeCode(INPUT_FILEPATH):
-            return
-        malpedia_relative_path = getMalpediaFilePath(INPUT_FILEPATH)
-        in_family_path = os.sep.join(malpedia_relative_path.split(os.sep)[1:])
-        if in_family_path.startswith("module"):
-            return
         disassembler = Disassembler()
-        if (
-            "elf." in INPUT_FILEPATH
-            and ("x86" in INPUT_FILEPATH or "x64" in INPUT_FILEPATH)
-            and re.search(unpacked_file_pattern, input_element["filename"])
-        ):
-            print(f"Analyzing file: {INPUT_FILEPATH}")
-            try:
-                REPORT = disassembler.disassembleFile(INPUT_FILEPATH)
-            except AttributeError:
-                logger.error("exception for: " + str(INPUT_FILENAME))
-        elif "win." in INPUT_FILEPATH and re.search(unpacked_file_pattern, input_element["filename"]):
+        if input_element["input_mode"] == "file":
             print(f"Analyzing file: {INPUT_FILEPATH}")
             try:
                 REPORT = disassembler.disassembleFile(INPUT_FILEPATH)
             except AttributeError:
                 logger.error("AttributeError for: " + str(INPUT_FILENAME))
-        elif re.search(dump_file_pattern, input_element["filename"]):
+        elif input_element["input_mode"] == "dump":
             print(f"Analyzing file: {INPUT_FILEPATH}")
             BUFFER = readFileContent(INPUT_FILEPATH)
-            BASE_ADDR = parseBaseAddrFromArgs(INPUT_FILENAME)
-            BITNESS = getBitnessFromFilename(INPUT_FILENAME)
+            BASE_ADDR = input_element["base_addr"]
+            BITNESS = input_element["bitness"]
             try:
                 REPORT = disassembler.disassembleBuffer(BUFFER, BASE_ADDR, BITNESS)
             except AttributeError:
                 logger.error("AttributeError for: " + str(INPUT_FILENAME))
         if REPORT:
-            REPORT.family = getFamilyName(INPUT_FILEPATH)
-            REPORT.version = getSampleVersion(INPUT_FILEPATH, REPORT.family)
-            REPORT.filename = os.path.basename(malpedia_relative_path)
+            REPORT.family = input_element["family"]
+            REPORT.version = input_element["version"]
+            REPORT.filename = os.path.basename(input_element["malpedia_relative_path"])
             output_dir = input_element.get("output_dir", "finished-reports")
             with open(output_dir + os.sep + REPORT_STEM + ".smda", "w") as fout:
                 json.dump(REPORT.toDict(), fout, indent=1, sort_keys=True)
                 logger.info("Wrote " + output_dir + "/" + REPORT_STEM + ".smda")
+            return "written"
     except Exception:
         print("RunTimeError, we skip!")
         print("smda: " + str(INPUT_FILENAME))
         traceback.print_exc()
-    return None
+        return "error"
+    return "ignored"
+
+
+def parseArgs(argv=None):
+    parser = argparse.ArgumentParser(description="Run SMDA over selected Malpedia benchmark samples")
+    parser.add_argument("malpedia_root", help="Path to extracted malpedia root")
+    parser.add_argument("output_dir", nargs="?", default="finished-reports", help="Output folder or run-folder prefix")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=None,
+        help="Number of repeated run folders to write as <output_dir>_N. Omit for legacy single-folder mode.",
+    )
+    return parser.parse_args(argv)
+
+
+def buildOutputDirs(output_dir, runs):
+    if runs is None:
+        return [output_dir]
+    if runs < 1:
+        raise RuntimeError("--runs must be greater than zero")
+    return [f"{output_dir}_{i}" for i in range(runs)]
+
+
+def runOneOutput(input_queue, output_dir, workers):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    finished_reports = getAllReportFilenames(output_dir)
+    run_queue = []
+    for input_element in input_queue:
+        run_element = dict(input_element)
+        run_element["finished_reports"] = finished_reports
+        run_element["output_dir"] = output_dir
+        run_queue.append(run_element)
+
+    counts = {}
+    if workers == 1:
+        for result in tqdm.tqdm(map(work, run_queue), total=len(run_queue)):
+            counts[result] = counts.get(result, 0) + 1
+    else:
+        with Pool(workers) as pool:
+            for result in tqdm.tqdm(pool.imap_unordered(work, run_queue), total=len(run_queue)):
+                counts[result] = counts.get(result, 0) + 1
+    print(
+        "Run summary for {}: written={}, skipped={}, ignored={}, errors={}".format(
+            output_dir,
+            counts.get("written", 0),
+            counts.get("skipped", 0),
+            counts.get("ignored", 0),
+            counts.get("error", 0),
+        )
+    )
 
 
 if __name__ == "__main__":
@@ -225,41 +346,19 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    if len(sys.argv) < 2:
-        print(f"usage: {sys.argv[0]} <malpedia_root> [output_dir]")
-        sys.exit(1)
-    malpedia_path = sys.argv[1]
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else "finished-reports"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    finished_reports = getAllReportFilenames(output_dir)
-    input_queue = []
-    # Find all targets (everything) to disassemble in malpedia.
-    for root, _subdir, files in sorted(os.walk(malpedia_path)):
-        if ".git" in root:
-            continue
-        for filename in sorted(files):
-            if not (re.search(unpacked_file_pattern, filename) or re.search(dump_file_pattern, filename)):
-                continue
-            filepath = root + os.sep + filename
-            # Family-relative stem keeps reports unique across family folders that reuse
-            # the same dump/sample basename (e.g. dump_0x00400000).
-            report_stem = os.path.relpath(filepath, malpedia_path).replace(os.sep, "_")
-            input_element = {
-                "filename": filename,
-                "report_stem": report_stem,
-                "finished_reports": finished_reports,
-                "filepath": filepath,
-                "output_dir": output_dir,
-            }
-            input_queue.append(input_element)
-    # Use Pooling for parallel processing. A fresh Disassembler is created per
-    # file (see work()), so multi-process workers are safe and order-independent.
-    # Default to all cores (capped) since disassembly is CPU-bound; allow an
-    # explicit override via SMDA_BENCH_WORKERS for tuning per runner size.
-    workers = int(os.environ.get("SMDA_BENCH_WORKERS", "0")) or (cpu_count() or 1)
-    workers = max(1, min(workers, 8))
-    with Pool(workers) as pool:
-        for _ in tqdm.tqdm(pool.imap_unordered(work, input_queue), total=len(input_queue)):
-            pass
+    args = parseArgs()
+    workers = resolveWorkerCount()
+    output_dirs = buildOutputDirs(args.output_dir, args.runs)
+    input_queue, skipped = buildTargetQueue(args.malpedia_root)
+    print(
+        "Malpedia benchmark queue: targets={}, skipped={}, workers={}, output_dirs={}".format(
+            len(input_queue),
+            sum(skipped.values()),
+            workers,
+            ", ".join(output_dirs),
+        )
+    )
+    print("Skipped by reason: " + ", ".join(f"{key}={value}" for key, value in sorted(skipped.items())))
+    for output_dir in output_dirs:
+        runOneOutput(input_queue, output_dir, workers)
     print("DONE, shutting down")

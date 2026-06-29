@@ -6,6 +6,18 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+    inputs:
+      runs:
+        description: "Malpedia benchmark repetitions per side"
+        type: choice
+        options:
+          - "1"
+          - "3"
+        default: "1"
+      workers:
+        description: "Malpedia worker processes per run"
+        type: string
+        default: "1"
 
 permissions:
   contents: read
@@ -78,10 +90,10 @@ jobs:
         env:
           MALPEDIA_ZIP_PASSWORD: ${{ secrets.MALPEDIA_ZIP_PASSWORD }}
 
-  # Malpedia disassembly. Base and PR run as concurrent matrix legs (instead of
-  # six sequential passes in one job). The base leg's results are cached on the
-  # base commit SHA, so re-pushing to a PR while master is unchanged skips the
-  # base passes entirely.
+  # Malpedia disassembly. Base and PR run as concurrent matrix legs. Automatic
+  # PR runs use one low-contention pass for meaningful timing; workflow_dispatch
+  # can request a deeper three-pass run. The base leg's results are cached on the
+  # base commit SHA and harness settings.
   malpedia:
     name: Malpedia Benchmark (${{ matrix.side }})
     needs: fixture_gate
@@ -97,7 +109,9 @@ jobs:
           - side: pr
             pythonpath: src
     env:
-      RUNS: 3
+      RUNS: ${{ github.event.inputs.runs || '1' }}
+      SMDA_BENCH_WORKERS: ${{ github.event.inputs.workers || '1' }}
+      SMDA_BENCH_LOW_NOISE: "1"
     steps:
       - name: Checkout PR code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -126,10 +140,8 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            runtime_measurements/base_0
-            runtime_measurements/base_1
-            runtime_measurements/base_2
-          key: smda-base-${{ runner.os }}-py3.11-${{ steps.basesha.outputs.sha }}-${{ hashFiles('.github/workflows/scripts/process_malpedia.py') }}
+            runtime_measurements/base_*
+          key: smda-base-${{ runner.os }}-py3.11-${{ steps.basesha.outputs.sha }}-runs${{ env.RUNS }}-workers${{ env.SMDA_BENCH_WORKERS }}-${{ hashFiles('.github/workflows/perf_benchmark.yml', '.github/workflows/scripts/process_malpedia.py') }}
 
       - name: Set up Python
         if: matrix.side == 'pr' || steps.basecache.outputs.cache-hit != 'true'
@@ -156,10 +168,8 @@ jobs:
         if: matrix.side == 'pr' || steps.basecache.outputs.cache-hit != 'true'
         run: |
           PYTHONPATH=${{ matrix.pythonpath }} python -c "import os, smda; expected = os.path.abspath('${{ matrix.pythonpath }}'); actual = os.path.abspath(smda.__file__); print('${{ matrix.side }} smda:', actual); assert actual.startswith(expected + os.sep), f'Expected ${{ matrix.side }} smda from {expected}, got {actual} (editable install shadowing PYTHONPATH?)'"
-          for i in $(seq 0 $((RUNS - 1))); do
-            PYTHONPATH=${{ matrix.pythonpath }} python .github/workflows/scripts/process_malpedia.py \
-              malpedia_extracted/malpedia "runtime_measurements/${{ matrix.side }}_$i"
-          done
+          PYTHONPATH=${{ matrix.pythonpath }} python .github/workflows/scripts/process_malpedia.py \
+            malpedia_extracted/malpedia "runtime_measurements/${{ matrix.side }}" --runs "$RUNS"
 
       - name: Upload run artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

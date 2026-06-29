@@ -3,8 +3,8 @@
 Runtime efficiency evaluation script for SMDA.
 
 Compares SMDA reports generated on the base branch vs the PR branch over the
-same set of samples, each disassembled several times (``base_0..N`` / ``pr_0..N``
-folders under ``runtime_measurements/``). It then:
+same set of samples, each disassembled once or several times (``base_0..N`` /
+``pr_0..N`` folders under ``runtime_measurements/``). It then:
 
   * verifies each side is internally deterministic (function-address sets agree
     across repeated runs of the same code),
@@ -456,6 +456,14 @@ def side_summary(aggregated):
     }
 
 
+def describe_run_mode(base_runs, pr_runs):
+    if base_runs == 1 and pr_runs == 1:
+        return "single-run low-noise"
+    if base_runs == pr_runs:
+        return f"best-of-{base_runs}"
+    return f"best-of-{base_runs}/{pr_runs}"
+
+
 # --------------------------------------------------------------------------- #
 # Report rendering
 # --------------------------------------------------------------------------- #
@@ -479,6 +487,14 @@ def generate_markdown_report(model, output_path):
     pr_s = perf["pr_summary"]
     block_drift = perf.get("block_drift", [])
     wil = paired["wilcoxon"]
+    run_mode = model.get("run_mode", describe_run_mode(model["runs"]["base"], model["runs"]["pr"]))
+    context_note = (
+        "These context rows use each file's single observed time; they are low-contention "
+        "comparison estimates, not full workflow wall-clock times."
+        if run_mode == "single-run low-noise"
+        else "These context rows sum each file's best observed time across repeated runs; "
+        "they are normalized comparison estimates, not single-run CI wall-clock times."
+    )
 
     lines = [
         "### 📊 SMDA Performance Evaluation Benchmark Results",
@@ -504,6 +520,7 @@ def generate_markdown_report(model, output_path):
         "| --- | --- |",
         f"| Rooted instruction recall | **{corr_icon}** — {len(corr.get('instruction_regressions', []))} / {corr['n_common']} file(s) below tolerance |",
         f"| Function-set drift | **{drift_icon}** — {len(corr.get('function_set_drift', []))} / {corr['n_common']} file(s) differ (informational) |",
+        f"| Benchmark mode | {run_mode} |",
         f"| Determinism | **{det_icon}** — base {det['base']['runs']} run(s), PR {det['pr']['runs']} run(s) |",
         f"| Verdict | **{paired['verdict']}** |",
         f"| Median paired speedup | {paired['median_speedup']:+.2f}% "
@@ -513,7 +530,7 @@ def generate_markdown_report(model, output_path):
     ]
 
     lines += [
-        f"#### Per-side Timing Context (best of {model['runs']['base']}/{model['runs']['pr']} runs per file)",
+        f"#### Per-side Timing Context ({run_mode})",
         "| Side | Files | Functions | Median best time/file (s) | Sum of best times (s) | Throughput estimate (func/s) |",
         "| --- | --- | --- | --- | --- | --- |",
         f"| base | {base_s['files']} | {base_s['total_functions']} | {base_s['median_time']:.4f} | "
@@ -521,8 +538,7 @@ def generate_markdown_report(model, output_path):
         f"| pr | {pr_s['files']} | {pr_s['total_functions']} | {pr_s['median_time']:.4f} | "
         f"{pr_s['total_time']:.2f} | ~{pr_s['functions_per_sec']:.0f} |",
         "",
-        "> These context rows sum each file's best observed time across repeated runs; "
-        "they are normalized comparison estimates, not single-run CI wall-clock times.",
+        f"> {context_note}",
         "",
         "**Paired per-file timing (positive speedup = PR faster):**",
         "| Statistic | Value |",
@@ -689,6 +705,7 @@ def evaluate(runtime_path):
         "generated": generated,
         "status": "ok",
         "runs": {"base": len(base_folders), "pr": len(pr_folders)},
+        "run_mode": describe_run_mode(len(base_folders), len(pr_folders)),
         "determinism": {"base": base_det, "pr": pr_det},
         "correctness": {
             "pass": len(paired["instruction_regressions"]) == 0,
