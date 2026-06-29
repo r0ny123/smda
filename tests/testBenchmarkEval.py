@@ -99,12 +99,25 @@ class TestWilcoxon(unittest.TestCase):
 
 
 class TestAggregationAndDeterminism(unittest.TestCase):
-    def _rep(self, addrs, t, insn_per_func=1):
+    def _rep(
+        self,
+        addrs,
+        t,
+        insn_per_func=1,
+        instruction_addrs=None,
+        rooted_instruction_addrs=None,
+        rooted_mode="seed-closure",
+        rooted_function_count=0,
+    ):
         return {
             "execution_time": t,
             "block_counts": dict.fromkeys(addrs, 1),
             "function_count": len(addrs),
             "instruction_count": len(addrs) * insn_per_func,
+            "instruction_addrs": instruction_addrs or [],
+            "rooted_instruction_addrs": rooted_instruction_addrs or [],
+            "rooted_instruction_mode": rooted_mode,
+            "rooted_function_count": rooted_function_count,
         }
 
     def test_min_of_runs(self):
@@ -117,6 +130,35 @@ class TestAggregationAndDeterminism(unittest.TestCase):
         self.assertEqual(agg["a.smda"]["time_min"], 2.0)
         self.assertEqual(agg["a.smda"]["function_addrs"], frozenset({"0x1", "0x2"}))
         self.assertEqual(meta["files"], 1)
+
+    def test_instruction_address_sets_are_order_independent(self):
+        caches = {
+            "base_0": {
+                "a.smda": self._rep(
+                    ["0x1"],
+                    1.0,
+                    instruction_addrs=[0x10, 0x11],
+                    rooted_instruction_addrs=[0x10, 0x11],
+                    rooted_mode="seed-closure",
+                    rooted_function_count=3,
+                )
+            },
+            "base_1": {
+                "a.smda": self._rep(
+                    ["0x1"],
+                    1.0,
+                    instruction_addrs=[0x10, 0x12],
+                    rooted_instruction_addrs=[0x10, 0x12],
+                    rooted_mode="xref-closure",
+                    rooted_function_count=1,
+                )
+            },
+        }
+        agg, _ = er.aggregate_runs(caches)
+        self.assertEqual(agg["a.smda"]["instruction_addrs"], frozenset({0x10}))
+        self.assertEqual(agg["a.smda"]["rooted_instruction_addrs"], frozenset({0x10}))
+        self.assertEqual(agg["a.smda"]["rooted_instruction_mode"], "mixed")
+        self.assertEqual(agg["a.smda"]["rooted_function_count"], 2)
 
     def test_determinism_pass_and_fail(self):
         ok = {
@@ -166,6 +208,81 @@ class TestNoiseAwareVerdict(unittest.TestCase):
         paired = self._paired([2.0] * 12, [1.0] * 12)  # +50%, well beyond noise
         stats = er.compute_paired_stats(paired, noise_floor_pct=4.0)
         self.assertEqual(stats["verdict"], "PR is faster")
+
+
+class TestMarkdownReport(unittest.TestCase):
+    def test_instruction_regression_summary_uses_recall_threshold(self):
+        model = {
+            "generated": "2026-06-29 00:00:00",
+            "runs": {"base": 1, "pr": 1},
+            "run_mode": "single-run low-noise",
+            "determinism": {
+                "base": {
+                    "is_deterministic": True,
+                    "runs": 1,
+                    "files_checked": 1,
+                    "median_timing_cv": 0.0,
+                    "files_disagreeing": [],
+                },
+                "pr": {
+                    "is_deterministic": True,
+                    "runs": 1,
+                    "files_checked": 1,
+                    "median_timing_cv": 0.0,
+                    "files_disagreeing": [],
+                },
+            },
+            "correctness": {
+                "pass": False,
+                "n_common": 1,
+                "instruction_tolerance": 0.01,
+                "instruction_regressions": [
+                    {
+                        "file": "a.smda",
+                        "pr_recovered_rooted_instructions": 98,
+                        "base_rooted_instructions": 100,
+                        "recall": 0.98,
+                        "rooted_mode": "seed-closure",
+                        "base_instructions": 100,
+                        "pr_instructions": 98,
+                    }
+                ],
+                "function_set_drift": [],
+            },
+            "performance": {
+                "base_summary": {
+                    "files": 1,
+                    "total_functions": 1,
+                    "median_time": 1.0,
+                    "total_time": 1.0,
+                    "functions_per_sec": 1.0,
+                },
+                "pr_summary": {
+                    "files": 1,
+                    "total_functions": 1,
+                    "median_time": 1.0,
+                    "total_time": 1.0,
+                    "functions_per_sec": 1.0,
+                },
+                "paired": {
+                    "n": 1,
+                    "median_speedup": 0.0,
+                    "ci_median": (0.0, 0.0),
+                    "mean_speedup": 0.0,
+                    "ci_mean": (0.0, 0.0),
+                    "stdev_speedup": 0.0,
+                    "iqr_speedup": 0.0,
+                    "wilcoxon": {"p_value": None, "note": "insufficient data"},
+                    "verdict": "indistinguishable from base",
+                    "noise_floor_pct": 0.0,
+                },
+                "block_drift": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as d:
+            output_path = Path(d) / "report.md"
+            er.generate_markdown_report(model, output_path)
+            self.assertIn("below 99.0% recall", output_path.read_text())
 
 
 class TestEndToEnd(unittest.TestCase):

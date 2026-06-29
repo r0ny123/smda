@@ -226,7 +226,7 @@ class RecursiveDisassembler:
         fn_min, fn_max = self.disassembly.function_borders[owner_fn]
         owner_state.instructions = []
         for addr in sorted(self.disassembly.instructions.keys()):
-            if fn_min <= addr < fn_max:
+            if fn_min <= addr < fn_max and self.disassembly.ins2fn.get(addr) == owner_fn:
                 mnemonic, size = self.disassembly.instructions[addr]
                 owner_state.instructions.append((addr, size, mnemonic, "", b""))
         owner_state.code_refs = set()
@@ -576,12 +576,13 @@ class RecursiveDisassembler:
                 if cbAnalysisTimeout and cbAnalysisTimeout():
                     break
                 LOGGER.debug("based on gap, performing function analysis of 0x%08x", gap_candidate)
+                code_map_size_before = len(self.disassembly.code_map)
                 state = self.analyzeFunction(gap_candidate, as_gap=True)
                 function_blocks = state.getBlocks()
                 if function_blocks:
                     LOGGER.debug("+ got some blocks here -> 0x%08x", gap_candidate)
                 recovered = gap_candidate in self.disassembly.functions
-                extended = state.num_blocks_analyzed > 0 and not recovered
+                extended = len(self.disassembly.code_map) > code_map_size_before and not recovered
                 if recovered:
                     fn_min = self.disassembly.function_borders[gap_candidate][0]
                     fn_max = self.disassembly.function_borders[gap_candidate][1]
@@ -778,13 +779,18 @@ class RecursiveDisassembler:
                 ins_by_addr[ins[0]] = ins
         return ins_by_addr
 
-    def _clear_owned_instructions_from(self, fn_start, min_addr, max_addr=None):
-        instruction_starts = {
-            ins[0]
-            for block in self.disassembly.functions.get(fn_start, [])
-            for ins in block
-            if min_addr <= ins[0] and (max_addr is None or ins[0] < max_addr)
-        }
+    def _clear_owned_instructions_from(self, fn_start, min_addr, max_addr=None, owned_ins=None):
+        if owned_ins is not None:
+            instruction_starts = {
+                addr for addr in owned_ins if min_addr <= addr and (max_addr is None or addr < max_addr)
+            }
+        else:
+            instruction_starts = {
+                ins[0]
+                for block in self.disassembly.functions.get(fn_start, [])
+                for ins in block
+                if min_addr <= ins[0] and (max_addr is None or ins[0] < max_addr)
+            }
         if not instruction_starts:
             instruction_starts = {
                 addr
@@ -953,15 +959,15 @@ class RecursiveDisassembler:
             return False
         code_refs_snapshot = self._snapshot_code_refs_around_addrs(full_parent_ins)
         if parent_start <= split_addr:
-            parent_ins = self._collect_owned_instruction_map(parent_start, max_addr=split_addr)
+            parent_ins = {addr: ins for addr, ins in full_parent_ins.items() if addr < split_addr}
             if not parent_ins:
                 return False
-            self._clear_owned_instructions_from(parent_start, split_addr)
+            self._clear_owned_instructions_from(parent_start, split_addr, owned_ins=full_parent_ins)
             self._rebuild_merged_function(parent_start, parent_ins)
         else:
             # The containing border can start above an interior xref target.
-            self._clear_owned_instructions_from(parent_start, split_addr, parent_start)
-            parent_ins = self._collect_owned_instruction_map(parent_start)
+            self._clear_owned_instructions_from(parent_start, split_addr, parent_start, owned_ins=full_parent_ins)
+            parent_ins = {addr: ins for addr, ins in full_parent_ins.items() if not (split_addr <= addr < parent_start)}
             if not parent_ins:
                 self._rebuild_merged_function(parent_start, full_parent_ins)
                 self._restore_code_refs_around_addrs(code_refs_snapshot)
@@ -1431,6 +1437,39 @@ class RecursiveDisassembler:
                 )
                 self._rebuild_merged_function(parent_start, ins_by_addr)
 
+    def _record_parent_merge_instruction(self, parent_start, ins_by_addr, ins):
+        addr, size = ins[0], ins[1]
+        ins_by_addr[addr] = ins
+        self.disassembly.instructions[addr] = (ins[2], ins[1])
+        for offset in range(size):
+            self.disassembly.code_map[addr + offset] = addr
+            self.disassembly.ins2fn[addr + offset] = parent_start
+
+    def _refresh_parent_merge_border(self, parent_start, ins_by_addr):
+        fn_min = min(ins[0] for ins in ins_by_addr.values())
+        fn_max = max(ins[0] + ins[1] for ins in ins_by_addr.values())
+        self.disassembly.function_borders[parent_start] = (fn_min, fn_max)
+        if hasattr(self.fc_manager, "updateBorder"):
+            self.fc_manager.updateBorder(parent_start, fn_min, fn_max)
+
+    def _deferred_parent_merge_entry(self, parent_start):
+        deferred_merges = getattr(self, "_deferred_parent_merges", None)
+        if deferred_merges is None:
+            return None
+        entry = deferred_merges.get(parent_start)
+        if entry is None:
+            entry = self._collect_insn_map_for_merge(parent_start)
+            deferred_merges[parent_start] = entry
+        return entry
+
+    def _flushDeferredParentMerges(self):
+        deferred_merges = getattr(self, "_deferred_parent_merges", None)
+        if not deferred_merges:
+            return
+        for parent_start, ins_by_addr in sorted(deferred_merges.items()):
+            self._rebuild_merged_function(parent_start, ins_by_addr)
+        deferred_merges.clear()
+
     def _mergeExtensionIntoParent(self, state, parent_start):
         if not state.instructions:
             return
@@ -1446,10 +1485,15 @@ class RecursiveDisassembler:
             self.disassembly.addDataRefs(dref[0], dref[1])
         self.disassembly.data_map.update(state.data_bytes)
 
-        ins_by_addr = self._collect_insn_map_for_merge(parent_start)
+        ins_by_addr = self._deferred_parent_merge_entry(parent_start)
+        if ins_by_addr is None:
+            ins_by_addr = self._collect_insn_map_for_merge(parent_start)
         for ins in state.instructions:
-            ins_by_addr[ins[0]] = ins
-        self._rebuild_merged_function(parent_start, ins_by_addr)
+            self._record_parent_merge_instruction(parent_start, ins_by_addr, ins)
+        if getattr(self, "_deferred_parent_merges", None) is not None:
+            self._refresh_parent_merge_border(parent_start, ins_by_addr)
+        else:
+            self._rebuild_merged_function(parent_start, ins_by_addr)
 
     def _fillInteriorFunctionHoles(
         self,
@@ -1467,43 +1511,51 @@ class RecursiveDisassembler:
         if max_function_span is None:
             max_function_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
         attempts = 0
-        for _round in range(max_rounds):
-            if not self._gap_budget_remaining():
-                break
-            progress = False
-            for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
-                span = fmax - fmin
-                if span > max_function_span or span <= min_function_span:
-                    continue
-                interval_end = fmax
-                if hasattr(self.fc_manager, "_gapIntervalForAddr"):
-                    interval = self.fc_manager._gapIntervalForAddr(fmax - 1)
-                    if interval is not None:
-                        interval_end = interval[1]
-                for hole_start in self._iter_interior_hole_starts(fmin, interval_end, max_scan_bytes):
-                    if attempts >= max_attempts or not self._gap_budget_remaining():
-                        return
-                    if self.fc_manager.getInteriorExtensionParent(hole_start) != fn_start:
+        outermost_deferred_merge = getattr(self, "_deferred_parent_merges", None) is None
+        if outermost_deferred_merge:
+            self._deferred_parent_merges = {}
+        try:
+            for _round in range(max_rounds):
+                if not self._gap_budget_remaining():
+                    break
+                progress = False
+                for fn_start, (fmin, fmax) in list(self.disassembly.function_borders.items()):
+                    span = fmax - fmin
+                    if span > max_function_span or span <= min_function_span:
                         continue
-                    state = self._analyze_gap_function(hole_start, cbAnalysisTimeout)
-                    attempts += 1
-                    if state and state.num_blocks_analyzed:
-                        progress = True
-            if not progress:
-                break
+                    interval_end = fmax
+                    if hasattr(self.fc_manager, "_gapIntervalForAddr"):
+                        interval = self.fc_manager._gapIntervalForAddr(fmax - 1)
+                        if interval is not None:
+                            interval_end = interval[1]
+                    for hole_start in self._iter_interior_hole_starts(fmin, interval_end, max_scan_bytes):
+                        if attempts >= max_attempts or not self._gap_budget_remaining():
+                            return
+                        if self.fc_manager.getInteriorExtensionParent(hole_start) != fn_start:
+                            continue
+                        state = self._analyze_gap_function(hole_start, cbAnalysisTimeout)
+                        attempts += 1
+                        if state and state.num_blocks_analyzed:
+                            progress = True
+                if not progress:
+                    break
+        finally:
+            if outermost_deferred_merge:
+                try:
+                    self._flushDeferredParentMerges()
+                finally:
+                    self._deferred_parent_merges = None
 
     def _recoverPltStubs(self, cbAnalysisTimeout=None):
         if not self.disassembly.binary_info:
             return
         plt_ranges = []
-        for section in self.disassembly.binary_info.getSections() or []:
-            name = str(getattr(section, "name", "") or "")
+        for name, section_start, section_end in self.disassembly.binary_info.getSections() or []:
+            name = str(name or "")
             if ".plt" not in name or ".plt." in name:
                 continue
-            section_start = getattr(section, "virtual_address", 0)
-            section_size = getattr(section, "size", 0)
-            if section_size:
-                plt_ranges.append((section_start, section_start + section_size))
+            if section_end > section_start:
+                plt_ranges.append((section_start, section_end))
         if not plt_ranges:
             return
         for section_start, section_end in plt_ranges:

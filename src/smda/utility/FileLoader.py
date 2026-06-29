@@ -35,8 +35,15 @@ class FileLoader:
         return binary
 
     def _loadFile(self, buffer=None):
+        self._recognized_loader = None
         self._raw_data = buffer if buffer is not None else self._loadRawFileContent()
         if self._map_file:
+            self._data = b""
+            self._base_addr = 0
+            self._bitness = 0
+            self._code_areas = []
+            self._architecture = ""
+            self._abi = ""
             for loader in self.file_loaders:
                 if loader.isCompatible(self._raw_data):
                     self._recognized_loader = loader

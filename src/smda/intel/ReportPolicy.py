@@ -151,7 +151,7 @@ def trim_post_ret_padding(disassembly):
         trim_from = last_real[0] + last_real[1]
         parent_min, parent_max = disassembly.function_borders.get(fn_start, (fn_start, trim_from))
         addr = trim_from
-        local_removed = set()
+        trim_candidates = []
         while addr < parent_max:
             if addr not in disassembly.instructions:
                 break
@@ -166,16 +166,17 @@ def trim_post_ret_padding(disassembly):
             ]
             if not byte_vals or any(val not in _PADDING_BYTES for val in byte_vals):
                 break
-            local_removed.add(addr)
-            disassembly.instructions.pop(addr, None)
-            for offset in range(size):
-                disassembly.code_map.pop(addr + offset, None)
-                disassembly.ins2fn.pop(addr + offset, None)
+            trim_candidates.append((addr, size))
             addr += size
-        if local_removed:
+        if trim_candidates and addr >= parent_max:
+            local_removed = {candidate_addr for candidate_addr, _size in trim_candidates}
+            for candidate_addr, size in trim_candidates:
+                disassembly.instructions.pop(candidate_addr, None)
+                for offset in range(size):
+                    disassembly.code_map.pop(candidate_addr + offset, None)
+                    disassembly.ins2fn.pop(candidate_addr + offset, None)
             removed_addrs |= local_removed
-            new_end = trim_from if addr >= parent_max else addr
-            disassembly.function_borders[fn_start] = (parent_min, new_end)
+            disassembly.function_borders[fn_start] = (parent_min, trim_from)
             rebuilt = []
             for block in blocks:
                 kept = [ins for ins in block if ins[0] not in local_removed]
@@ -317,27 +318,34 @@ def _remove_function(disassembly, fn_start, ref_index=None):
     disassembly.thunk_functions.discard(fn_start)
     if not blocks:
         return
+    removed_addrs = set()
+    removed_instruction_starts = set()
     for block in blocks:
         for ins in block:
             addr, size = ins[0], ins[1]
-            disassembly.instructions.pop(addr, None)
-            for offset in range(size):
-                disassembly.code_map.pop(addr + offset, None)
-                disassembly.ins2fn.pop(addr + offset, None)
-    # Drop inbound code-ref edges pointing at addresses still owned by this function.
-    # Equivalent to filtering every code_refs_from[src] by `ins2fn[target] != fn_start`, but
-    # reached through a prebuilt reverse index so the cost is O(removed edges) instead of
-    # O(functions-removed * all-refs) -- the quadratic form dominated large-binary runtime.
+            removed_instruction_starts.add(addr)
+            removed_addrs.update(range(addr, addr + size))
     if ref_index is not None:
         reverse, targets_by_fn = ref_index
-        candidate_targets = targets_by_fn.get(fn_start, ())
+        candidate_targets = set(targets_by_fn.get(fn_start, ())) | removed_instruction_starts
     else:
         reverse, _ = _build_code_ref_reverse_index(disassembly)
-        candidate_targets = [t for t in reverse if disassembly.ins2fn.get(t) == fn_start]
+        candidate_targets = {
+            target for target in reverse if disassembly.ins2fn.get(target) == fn_start
+        } | removed_instruction_starts
+    for src in removed_instruction_starts:
+        targets = disassembly.code_refs_from.pop(src, None)
+        if not targets:
+            continue
+        for target in targets:
+            refs_to = disassembly.code_refs_to.get(target)
+            if refs_to is None:
+                continue
+            refs_to.discard(src)
+            if not refs_to:
+                disassembly.code_refs_to.pop(target, None)
     for target in candidate_targets:
-        # Only addresses whose ins2fn survived the instruction-byte pop above are still owned
-        # by fn_start; this mirrors the original per-target `ins2fn[target] == fn_start` test.
-        if disassembly.ins2fn.get(target) != fn_start:
+        if target not in removed_addrs and disassembly.ins2fn.get(target) != fn_start:
             continue
         for src in reverse.get(target, ()):
             refs = disassembly.code_refs_from.get(src)
@@ -346,7 +354,14 @@ def _remove_function(disassembly, fn_start, ref_index=None):
             refs.discard(target)
             if not refs:
                 disassembly.code_refs_from.pop(src, None)
-    disassembly.code_refs_to.pop(fn_start, None)
+        disassembly.code_refs_to.pop(target, None)
+    for block in blocks:
+        for ins in block:
+            addr, size = ins[0], ins[1]
+            disassembly.instructions.pop(addr, None)
+            for offset in range(size):
+                disassembly.code_map.pop(addr + offset, None)
+                disassembly.ins2fn.pop(addr + offset, None)
 
 
 def apply_intel_report_policy(disassembler):

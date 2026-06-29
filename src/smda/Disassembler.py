@@ -220,9 +220,10 @@ class Disassembler:
             if loader.has_recognized_format() and loader.getData():
                 binary_info = self._populateBinaryInfo(loader)
                 binary_info.is_buffer = True
-                binary_info.oep = binary_info.getOep()
                 if base_addr not in (0, loader.getBaseAddress()):
                     binary_info.base_addr = base_addr
+                    binary_info.oep = None
+                binary_info.oep = binary_info.getOep()
         if binary_info is None:
             binary_info = BinaryInfo(file_content)
             binary_info.base_addr = base_addr

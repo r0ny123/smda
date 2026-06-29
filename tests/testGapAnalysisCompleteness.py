@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from smda.common.BinaryInfo import BinaryInfo
 from smda.common.TailcallAnalyzer import TailcallAnalyzer
@@ -128,6 +129,53 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         self.assertGreaterEqual(len(parent_insn_starts), 8)
         self.assertIn(shared, parent_insn_starts)
 
+    def test_deferred_interior_hole_merge_flushes_on_attempt_limit(self):
+        class StubManager:
+            function_gaps = [(0x1001, 0x1010, 0xF)]
+
+            def _gapIntervalForAddr(self, _addr):
+                return (0x1001, 0x1010)
+
+            def getInteriorExtensionParent(self, addr):
+                return parent if addr == 0x1001 else None
+
+            def updateBorder(self, _start, _fmin, _fmax):
+                return
+
+        class StubState:
+            num_blocks_analyzed = 1
+            instructions = [(0x1001, 1, "ret", "", b"\xc3")]
+            code_refs = set()
+            data_refs = set()
+            data_bytes = set()
+
+        parent = 0x1000
+        disassembler = IntelDisassembler(SmdaConfig())
+        result = DisassemblyResult()
+        result.functions[parent] = [[(parent, 1, "nop", "", b"\x90")]]
+        result.function_borders[parent] = (parent, parent + 0x10)
+        result.instructions[parent] = ("nop", 1)
+        result.code_map[parent] = parent
+        result.ins2fn[parent] = parent
+        disassembler.disassembly = result
+        disassembler.fc_manager = StubManager()
+        disassembler._gap_extra_analyses = 0
+        disassembler._gap_recovery_limit = 10
+
+        def analyze_and_merge(_addr, _timeout=None):
+            state = StubState()
+            disassembler._mergeExtensionIntoParent(state, parent)
+            return state
+
+        disassembler._analyze_gap_function = analyze_and_merge
+
+        disassembler._fillInteriorFunctionHoles(max_attempts=1)
+
+        self.assertIsNone(disassembler._deferred_parent_merges)
+        self.assertEqual(result.ins2fn.get(0x1001), parent)
+        parent_starts = {ins[0] for block in result.functions[parent] for ins in block}
+        self.assertIn(0x1001, parent_starts)
+
     def test_switch_dispatch_fixture_has_full_instruction_recall(self):
         binary_info, shared = self._switch_dispatch_fixture()
         result = IntelDisassembler(SmdaConfig()).analyzeBuffer(binary_info, cbAnalysisTimeout=None)
@@ -138,6 +186,127 @@ class TestGapAnalysisCompleteness(unittest.TestCase):
         )
         self.assertGreaterEqual(completeness["recall"], 0.99)
         self.assertIn(shared, parent_starts)
+
+    def test_cfg_completeness_fallback_unpacks_section_tuples(self):
+        binary_info = BinaryInfo(b"\xc3\x90")
+        binary_info.base_addr = 0x1000
+        binary_info.bitness = 64
+        binary_info.architecture = "intel"
+        binary_info.code_areas = [(0x1000, 0x1001)]
+        binary_info.getSections = lambda: [(".text", 0x1000, 0x1001), (".data", 0x1001, 0x1002)]
+        result = DisassemblyResult()
+        result.binary_info = binary_info
+        result.instructions[0x1000] = ("ret", 1)
+        result.code_map[0x1000] = 0x1000
+
+        completeness = CfgEdgeValidator(result).measureExecutableCompleteness()
+
+        self.assertEqual(completeness["capstone_instruction_starts"], 1)
+        self.assertEqual(completeness["recall"], 1.0)
+
+    def test_revert_gap_function_only_removes_gap_owner_instructions(self):
+        class StubState:
+            def __init__(self):
+                self.instructions = []
+                self.code_refs = set()
+                self.data_refs = set()
+                self.reverted = []
+
+            def revertAnalysis(self):
+                self.reverted = list(self.instructions)
+
+        owner = 0x2000
+        other_owner = 0x3000
+        colliding_addr = owner
+        other_addr_in_border = owner + 4
+        state = StubState()
+        disassembler = IntelDisassembler(SmdaConfig())
+        result = DisassemblyResult()
+        result.functions[owner] = [[(owner, 1, "push", "", b""), (other_addr_in_border, 1, "ret", "", b"")]]
+        result.function_borders[owner] = (owner, owner + 8)
+        result.instructions[owner] = ("push", 1)
+        result.instructions[other_addr_in_border] = ("ret", 1)
+        result.ins2fn[owner] = owner
+        result.ins2fn[other_addr_in_border] = other_owner
+        disassembler.disassembly = result
+        disassembler.backend = SimpleNamespace(createAnalysisState=lambda _owner, _disassembly: state)
+        disassembler.fc_manager = SimpleNamespace(
+            candidates={owner: SimpleNamespace(is_gap_candidate=True)},
+            removeBorder=lambda _owner: None,
+            updateAnalysisAborted=lambda _owner, _reason: None,
+        )
+
+        self.assertTrue(disassembler._revertGapFunction(colliding_addr, 0x1000))
+        self.assertEqual([ins[0] for ins in state.reverted], [owner])
+
+    def test_gap_candidate_without_code_map_growth_is_not_treated_as_extension(self):
+        class StubState:
+            num_blocks_analyzed = 1
+
+            def getBlocks(self):
+                return [[(0x2000, 1, "ret", "", b"")]]
+
+        class StubCandidateManager:
+            def __init__(self):
+                self.gap_pointer = None
+                self.previously_analyzed_gap = 0
+                self.clear_count = 0
+                self.marked = []
+                self.aborted = []
+                self.advanced = []
+                self._returned = False
+
+            def clearGapAttempts(self):
+                self.clear_count += 1
+
+            def refreshFunctionGaps(self):
+                return
+
+            def nextGapCandidate(self, _next_gap=None):
+                if self._returned:
+                    return None
+                self._returned = True
+                return 0x2000
+
+            def markGapAttempted(self, addr):
+                self.marked.append(addr)
+
+            def nextTrustedCandidateInGap(self, _addr):
+                return None
+
+            def updateAnalysisAborted(self, addr, reason):
+                self.aborted.append((addr, reason))
+
+            def advanceGapScan(self, addr):
+                self.advanced.append(addr)
+
+        disassembler = IntelDisassembler(SmdaConfig())
+        disassembler.backend = SimpleNamespace(name="stub")
+        disassembler.disassembly = DisassemblyResult()
+        disassembler.disassembly.binary_info = BinaryInfo(b"")
+        disassembler.fc_manager = StubCandidateManager()
+        disassembler.analyzeFunction = lambda _addr, as_gap=False: StubState()
+
+        disassembler._runGapRecoveryPasses()
+
+        self.assertEqual(disassembler.fc_manager.clear_count, 1)
+        self.assertEqual(disassembler.fc_manager.marked, [0x2000])
+        self.assertEqual(disassembler.fc_manager.advanced, [0x2000])
+        self.assertEqual(disassembler.fc_manager.aborted[0][0], 0x2000)
+
+    def test_plt_recovery_uses_section_tuple_ranges(self):
+        disassembler = IntelDisassembler(SmdaConfig())
+        result = DisassemblyResult()
+        result.binary_info = SimpleNamespace(
+            getSections=lambda: [(".plt", 0x1000, 0x100C), (".plt.got", 0x2000, 0x2006)]
+        )
+        disassembler.disassembly = result
+        attempted = []
+        disassembler._analyze_gap_function = lambda addr, _timeout=None: attempted.append(addr) or None
+
+        disassembler._recoverPltStubs()
+
+        self.assertEqual(attempted, [0x1000, 0x1006])
 
     def test_interior_jmp_ref_target_splits_large_mapped_parent(self):
         base = 0x10000

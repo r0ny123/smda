@@ -118,6 +118,21 @@ def parse_folder_reports(folder_path):
     return {json_file.name: parse_report(json_file) for json_file in folder_path.glob("*.smda")}
 
 
+def _common_address_set(reps, key):
+    """Return addresses present in every repeat, independent of run folder ordering."""
+    addr_sets = [frozenset(r.get(key, [])) for r in reps]
+    if not addr_sets:
+        return frozenset()
+    return frozenset.intersection(*addr_sets)
+
+
+def _stable_rooted_mode(reps):
+    modes = sorted({r.get("rooted_instruction_mode", "unknown") for r in reps})
+    if len(modes) == 1:
+        return modes[0]
+    return "mixed"
+
+
 # --------------------------------------------------------------------------- #
 # Aggregation, determinism, pairing and statistics
 # --------------------------------------------------------------------------- #
@@ -160,10 +175,10 @@ def aggregate_runs(side_caches):
             "rooted_instruction_count": int(
                 statistics.median([r.get("rooted_instruction_count", 0) or 0 for r in reps])
             ),
-            "instruction_addrs": frozenset(reps[0].get("instruction_addrs", [])),
-            "rooted_instruction_addrs": frozenset(reps[0].get("rooted_instruction_addrs", [])),
-            "rooted_instruction_mode": reps[0].get("rooted_instruction_mode", "unknown"),
-            "rooted_function_count": reps[0].get("rooted_function_count", 0),
+            "instruction_addrs": _common_address_set(reps, "instruction_addrs"),
+            "rooted_instruction_addrs": _common_address_set(reps, "rooted_instruction_addrs"),
+            "rooted_instruction_mode": _stable_rooted_mode(reps),
+            "rooted_function_count": int(statistics.median([r.get("rooted_function_count", 0) or 0 for r in reps])),
             "addr_sets": addr_sets,
             "block_counts": reps[0].get("block_counts", {}),
         }
@@ -571,7 +586,8 @@ def generate_markdown_report(model, output_path):
         lines.append("")
         lines.append(
             f"<details>\n<summary>{len(corr['instruction_regressions'])} file(s) below "
-            f"{corr.get('instruction_tolerance', INSTRUCTION_RECALL_TOLERANCE) * 100:.1f}% recall</summary>"
+            f"{(1.0 - corr.get('instruction_tolerance', INSTRUCTION_RECALL_TOLERANCE)) * 100:.1f}% "
+            "recall</summary>"
         )
         lines.append("")
         for m in corr["instruction_regressions"][:25]:

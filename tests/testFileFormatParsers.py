@@ -161,6 +161,82 @@ class SmdaIntegrationTestSuite(unittest.TestCase):
         self.assertEqual(second_binary.code_areas, [])
         self.assertEqual(second_loader.getCodeAreas(), [])
 
+    def test_file_loader_recognition_state_is_per_load(self):
+        class FakeLoader:
+            @staticmethod
+            def isCompatible(data):
+                return data == b"known"
+
+            @staticmethod
+            def mapBinary(_data):
+                return b"mapped"
+
+            @staticmethod
+            def getBaseAddress(_data):
+                return 0x1000
+
+            @staticmethod
+            def getBitness(_data):
+                return 32
+
+            @staticmethod
+            def getCodeAreas(_data):
+                return [(0x1000, 0x1006)]
+
+            @staticmethod
+            def getArchitecture(_data):
+                return "intel"
+
+            @staticmethod
+            def getAbi(_data):
+                return ""
+
+        old_loaders = FileLoader.file_loaders
+        try:
+            FileLoader.file_loaders = [FakeLoader]
+            loader = FileLoader("/", load_file=False, map_file=True)
+            loader._loadFile(b"known")
+            self.assertTrue(loader.has_recognized_format())
+            self.assertEqual(loader.getData(), b"mapped")
+
+            loader._loadFile(b"unknown")
+            self.assertFalse(loader.has_recognized_format())
+            self.assertEqual(loader.getData(), b"")
+            self.assertEqual(loader.getBaseAddress(), 0)
+            self.assertEqual(loader.getCodeAreas(), [])
+        finally:
+            FileLoader.file_loaders = old_loaders
+
+    def test_disassemble_buffer_caches_oep_after_base_override(self):
+        fake_loader = SimpleNamespace(
+            has_recognized_format=lambda: True,
+            getData=lambda: b"mapped",
+            getBaseAddress=lambda: 0x1000,
+        )
+        fake_binary_info = SimpleNamespace(
+            is_buffer=False,
+            base_addr=0x1000,
+            architecture="intel",
+            oep=None,
+        )
+
+        def get_oep():
+            fake_binary_info.oep = 0x2200 - fake_binary_info.base_addr
+            return fake_binary_info.oep
+
+        fake_binary_info.getOep = get_oep
+        disassembler = Disassembler(config, backend="intel")
+        with (
+            mock.patch("smda.Disassembler.MemoryFileLoader", return_value=fake_loader),
+            mock.patch.object(disassembler, "_populateBinaryInfo", return_value=fake_binary_info),
+            mock.patch.object(disassembler, "initDisassembler"),
+            mock.patch.object(disassembler, "_disassemble", return_value=SimpleNamespace()),
+        ):
+            disassembler.disassembleBuffer(b"fake", 0x2000)
+
+        self.assertEqual(fake_binary_info.base_addr, 0x2000)
+        self.assertEqual(fake_binary_info.oep, 0x200)
+
     def test_pe_symbol_provider_returns_empty_mapping_without_code_section(self):
         symbol_provider = PeSymbolProvider(None)
         lief_binary = SimpleNamespace(sections=[], symbols=[])

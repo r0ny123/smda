@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from smda.common.BinaryInfo import BinaryInfo
+from smda.DisassemblyResult import DisassemblyResult
 from smda.intel.IntelDisassembler import IntelDisassembler
 from smda.intel.ReportPolicy import (
+    _remove_function,
     compute_connected_and_rooted_metrics,
     find_boundary_merge_pairs,
     is_prologue_only_orphan,
@@ -90,8 +92,6 @@ class TestReportPolicy(unittest.TestCase):
         self.assertIn("rooted_instruction_count", report.statistics.toDict())
 
     def test_trim_post_ret_padding_drops_synthetic_tail(self):
-        from smda.DisassemblyResult import DisassemblyResult
-
         disassembly = DisassemblyResult()
         disassembly.binary_info = BinaryInfo(b"\xc3\xcc\xcc")
         disassembly.binary_info.base_addr = 0x401000
@@ -107,6 +107,68 @@ class TestReportPolicy(unittest.TestCase):
         removed = trim_post_ret_padding(disassembly)
         self.assertIn(0x401001, removed)
         self.assertEqual(disassembly.function_borders[fn_start][1], 0x401001)
+
+    def test_trim_post_ret_padding_keeps_partial_padding_before_real_instruction(self):
+        disassembly = DisassemblyResult()
+        disassembly.binary_info = BinaryInfo(b"\xc3\xcc\x31")
+        disassembly.binary_info.base_addr = 0x401000
+        fn_start = 0x401000
+        disassembly.functions[fn_start] = [
+            [
+                (0x401000, 1, "ret", "", b"\xc3"),
+                (0x401001, 1, "db", "", b"\xcc"),
+                (0x401002, 1, "xor", "eax, eax", b"\x31"),
+            ]
+        ]
+        disassembly.function_borders[fn_start] = (0x401000, 0x401003)
+        disassembly.instructions[0x401000] = ("ret", 1)
+        disassembly.instructions[0x401001] = ("db", 1)
+        disassembly.instructions[0x401002] = ("xor", 1)
+        for addr in range(0x401000, 0x401003):
+            disassembly.code_map[addr] = addr
+            disassembly.ins2fn[addr] = fn_start
+
+        removed = trim_post_ret_padding(disassembly)
+
+        self.assertEqual(removed, set())
+        self.assertIn(0x401001, disassembly.instructions)
+        self.assertEqual(disassembly.function_borders[fn_start], (0x401000, 0x401003))
+
+    def test_remove_function_cleans_inbound_and_outbound_refs_before_maps(self):
+        disassembly = DisassemblyResult()
+        disassembly.functions = {
+            0x1000: [[(0x1000, 1, "call", "0x2002", b"")]],
+            0x2000: [[(0x2000, 2, "jmp", "0x3000", b""), (0x2002, 1, "ret", "", b"")]],
+            0x3000: [[(0x3000, 1, "ret", "", b"")]],
+            0x4000: [[(0x4000, 1, "call", "0x5000", b"")]],
+            0x5000: [[(0x5000, 1, "ret", "", b"")]],
+        }
+        disassembly.function_borders = {
+            0x1000: (0x1000, 0x1001),
+            0x2000: (0x2000, 0x2003),
+            0x3000: (0x3000, 0x3001),
+            0x4000: (0x4000, 0x4001),
+            0x5000: (0x5000, 0x5001),
+        }
+        for fn_start, blocks in disassembly.functions.items():
+            for block in blocks:
+                for addr, size, mnemonic, *_rest in block:
+                    disassembly.instructions[addr] = (mnemonic, size)
+                    for offset in range(size):
+                        disassembly.code_map[addr + offset] = addr
+                        disassembly.ins2fn[addr + offset] = fn_start
+        disassembly.addCodeRefs(0x1000, 0x2002)
+        disassembly.addCodeRefs(0x2000, 0x3000)
+        disassembly.addCodeRefs(0x4000, 0x5000)
+
+        _remove_function(disassembly, 0x2000)
+
+        self.assertNotIn(0x2000, disassembly.functions)
+        self.assertNotIn(0x2002, disassembly.code_refs_to)
+        self.assertNotIn(0x2000, disassembly.code_refs_from)
+        self.assertNotIn(0x2000, disassembly.code_refs_to.get(0x3000, set()))
+        self.assertEqual(disassembly.code_refs_from[0x4000], {0x5000})
+        self.assertEqual(disassembly.code_refs_to[0x5000], {0x4000})
 
     def test_rooted_metrics_include_connected_fields(self):
         disassembly, candidates = self._cutwail_like_policy_snapshot()

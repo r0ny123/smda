@@ -187,16 +187,16 @@ class CfgEdgeValidator:
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64 if self.bitness == 64 else capstone.CS_MODE_32)
         exec_sections = sections or []
         if not exec_sections and binary_info.getSections():
-            for section in binary_info.getSections():
-                flags = getattr(section, "flags", 0)
-                if flags & 4:
-                    exec_sections.append(
-                        (
-                            getattr(section, "virtual_address", 0),
-                            getattr(section, "virtual_address", 0) + getattr(section, "size", 0),
-                            getattr(section, "name", ""),
-                        )
-                    )
+            code_areas = getattr(binary_info, "code_areas", None) or []
+            for section_name, section_start, section_end in binary_info.getSections():
+                if code_areas:
+                    for code_start, code_end in code_areas:
+                        overlap_start = max(section_start, code_start)
+                        overlap_end = min(section_end, code_end)
+                        if overlap_end > overlap_start:
+                            exec_sections.append((overlap_start, overlap_end, section_name))
+                elif section_end > section_start:
+                    exec_sections.append((section_start, section_end, section_name))
         capstone_starts = set()
         smda_starts = set(self.disassembly.instructions.keys())
         for section_start, section_end, _name in exec_sections:
