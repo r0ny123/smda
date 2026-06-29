@@ -37,6 +37,8 @@ class FunctionCandidateManager:
         self.language_candidates_only = False
         # gap filling
         self.function_gaps = None
+        self._gap_starts = []
+        self._gap_ends = []
         self.max_function_addr = 0
         self.gap_pointer = None
         self.previously_analyzed_gap = 0
@@ -198,6 +200,8 @@ class FunctionCandidateManager:
             if cursor < area_end:
                 gaps.append([cursor, area_end, area_end - cursor])
         self.function_gaps = sorted(gaps)
+        self._gap_starts = [gap[0] for gap in self.function_gaps]
+        self._gap_ends = [gap[1] for gap in self.function_gaps]
 
     def initGapSearch(self):
         if self.gap_pointer is None:
@@ -213,10 +217,16 @@ class FunctionCandidateManager:
 
     def getNextGap(self, dont_skip=False):
         next_gap = self.getBitMask()
-        for gap in self.function_gaps:
-            if gap[0] > self.gap_pointer:
-                next_gap = gap[0]
-                break
+        gap_starts = getattr(self, "_gap_starts", [])
+        if len(gap_starts) == len(self.function_gaps):
+            idx = bisect.bisect_right(gap_starts, self.gap_pointer)
+            if idx < len(gap_starts):
+                next_gap = gap_starts[idx]
+        else:
+            for gap in self.function_gaps:
+                if gap[0] > self.gap_pointer:
+                    next_gap = gap[0]
+                    break
         LOGGER.debug(
             "getNextGap(%s) for 0x%08x based on gap_map: 0x%08x",
             dont_skip,
@@ -462,9 +472,16 @@ class FunctionCandidateManager:
     def _gapIntervalForAddr(self, addr):
         if not self.function_gaps:
             return None
-        for gap_start, gap_end, _ in self.function_gaps:
-            if gap_start <= addr < gap_end:
-                return gap_start, gap_end
+        gap_starts = getattr(self, "_gap_starts", [])
+        gap_ends = getattr(self, "_gap_ends", [])
+        if len(gap_starts) == len(self.function_gaps) and len(gap_ends) == len(self.function_gaps):
+            idx = bisect.bisect_right(gap_starts, addr) - 1
+            if idx >= 0 and addr < gap_ends[idx]:
+                return gap_starts[idx], gap_ends[idx]
+        else:
+            for gap_start, gap_end, _ in self.function_gaps:
+                if gap_start <= addr < gap_end:
+                    return gap_start, gap_end
         return None
 
     def nextTrustedCandidateInGap(self, failed_addr):

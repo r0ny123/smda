@@ -53,6 +53,8 @@ class RecursiveDisassembler:
         self.disassembly.setConfidenceThreshold(config.CONFIDENCE_THRESHOLD)
         self._symbol_cache = {}
         self._api_cache = {}
+        self._direct_branch_target_cache = {}
+        self._direct_branch_mnemonics = None
 
     def _addLabelProviders(self):
         self._registerLabelProvider(WinApiResolver(self.config))
@@ -558,6 +560,7 @@ class RecursiveDisassembler:
         self._reset_gap_recovery_budget()
         max_passes = getattr(self.config, "GAP_RECOVERY_MAX_PASSES", 2) if self._intelInteriorGapEnabled() else 1
         for pass_index in range(max_passes):
+            pass_code_map_before = len(self.disassembly.code_map)
             if cbAnalysisTimeout and cbAnalysisTimeout():
                 break
             if hasattr(self.fc_manager, "refreshFunctionGaps"):
@@ -566,7 +569,9 @@ class RecursiveDisassembler:
                 if hasattr(self.fc_manager, "clearGapAttempts"):
                     self.fc_manager.clearGapAttempts()
                 self.fc_manager.refreshFunctionGaps()
-            gap_candidate = self.fc_manager.nextGapCandidate()
+            gap_candidate = (
+                None if pass_index > 0 and self._intelInteriorGapEnabled() else self.fc_manager.nextGapCandidate()
+            )
             while gap_candidate is not None:
                 if cbAnalysisTimeout and cbAnalysisTimeout():
                     break
@@ -609,6 +614,13 @@ class RecursiveDisassembler:
             if self._intelInteriorGapEnabled():
                 self._pruneInteriorGapFunctions()
                 if self._gap_budget_remaining():
+                    self._recoverUnmappedDirectBranchTargets(cbAnalysisTimeout)
+                if pass_index > 0:
+                    LOGGER.debug(
+                        "After follow-up direct-branch recovery, functions: %d", len(self.disassembly.functions)
+                    )
+                    continue
+                if self._gap_budget_remaining():
                     self._fillInteriorFunctionHoles(cbAnalysisTimeout)
                 if self._gap_budget_remaining():
                     self._recoverLargeUnmappedGaps(
@@ -631,10 +643,9 @@ class RecursiveDisassembler:
                     self._recoverInteriorCodeRefSplits(cbAnalysisTimeout)
                 LOGGER.debug("After interior gap recovery, functions: %d", len(self.disassembly.functions))
             if pass_index + 1 < max_passes and hasattr(self.fc_manager, "refreshFunctionGaps"):
-                before = len(self.disassembly.code_map)
                 self.fc_manager.refreshFunctionGaps()
                 remaining = sum(gap[2] for gap in (self.fc_manager.function_gaps or []) if gap[2] > 1)
-                if remaining == 0 or len(self.disassembly.code_map) == before:
+                if remaining == 0 or len(self.disassembly.code_map) == pass_code_map_before:
                     break
 
     def _instruction_mnemonic(self, addr):
@@ -649,6 +660,96 @@ class RecursiveDisassembler:
 
         mnemonic = self._instruction_mnemonic_base(addr)
         return mnemonic in CALL_INS or mnemonic in JMP_INS
+
+    def _direct_branch_target(self, mnemonic, op_str):
+        from smda.intel.definitions import CALL_INS, CJMP_INS, JMP_INS, LOOP_INS
+
+        if self._direct_branch_mnemonics is None:
+            self._direct_branch_mnemonics = set(CALL_INS) | set(JMP_INS) | set(CJMP_INS) | set(LOOP_INS)
+        base_mnemonic = mnemonic.split(" ")[-1]
+        if base_mnemonic not in self._direct_branch_mnemonics:
+            return None
+        cache_key = (base_mnemonic, op_str)
+        if cache_key in self._direct_branch_target_cache:
+            return self._direct_branch_target_cache[cache_key]
+        stripped = (op_str or "").strip()
+        if not stripped or ":" in stripped or "[" in stripped:
+            self._direct_branch_target_cache[cache_key] = None
+            return None
+        try:
+            target = int(stripped, 0)
+        except ValueError:
+            self._direct_branch_target_cache[cache_key] = None
+            return None
+        self._direct_branch_target_cache[cache_key] = target
+        return target
+
+    def _iter_function_instructions(self):
+        for fn_start, blocks in self.disassembly.functions.items():
+            for block in blocks:
+                for ins in block:
+                    yield fn_start, ins
+
+    def _instruction_detail_map(self):
+        return {ins[0]: (owner, ins[2], ins[3]) for owner, ins in self._iter_function_instructions()}
+
+    def _function_start_for_addr(self, addr):
+        if addr in self.disassembly.functions:
+            return addr
+        owner = self.disassembly.ins2fn.get(addr)
+        if owner is not None:
+            return owner
+        for fn_start, borders in self.disassembly.function_borders.items():
+            if borders[0] <= addr < borders[1]:
+                return fn_start
+        return None
+
+    def _external_inbound_function_starts(self):
+        inbound = set()
+        for target, ref_froms in self.disassembly.code_refs_to.items():
+            target_owner = self._function_start_for_addr(target)
+            if target_owner is None:
+                continue
+            for ref_from in ref_froms:
+                caller = self.disassembly.ins2fn.get(ref_from)
+                if caller is not None and caller != target_owner:
+                    inbound.add(target_owner)
+                    break
+        return inbound
+
+    def _function_has_external_inbound_ref(self, fn_start):
+        borders = self.disassembly.function_borders.get(fn_start)
+        if borders is None:
+            refs = self.disassembly.code_refs_to.get(fn_start, set())
+            return any(self.disassembly.ins2fn.get(ref_from) != fn_start for ref_from in refs)
+        fmin, fmax = borders
+        for target, ref_froms in self.disassembly.code_refs_to.items():
+            if target != fn_start and not (fmin <= target < fmax):
+                continue
+            for ref_from in ref_froms:
+                caller = self.disassembly.ins2fn.get(ref_from)
+                if caller is not None and caller != fn_start:
+                    return True
+        return False
+
+    def _is_direct_branch_ref_target(self, target, ref_froms, instruction_details=None):
+        if instruction_details is None:
+            instruction_details = self._instruction_detail_map()
+        for ref_from in ref_froms:
+            detail = instruction_details.get(ref_from)
+            if detail is None:
+                continue
+            _owner, mnemonic, op_str = detail
+            if self._direct_branch_target(mnemonic, op_str) == target:
+                return True
+        return False
+
+    def _direct_branch_gap_recovery_allowed(self):
+        function_threshold = getattr(self.config, "GAP_DIRECT_BRANCH_ONLY_WHEN_FUNCTIONS_BELOW", 1200)
+        instruction_threshold = getattr(self.config, "GAP_DIRECT_BRANCH_ONLY_WHEN_INSTRUCTIONS_BELOW", 100000)
+        return (function_threshold <= 0 or len(self.disassembly.functions) < function_threshold) and (
+            instruction_threshold <= 0 or len(self.disassembly.instructions) < instruction_threshold
+        )
 
     def _purge_code_refs_for_addr(self, addr):
         for target in list(self.disassembly.code_refs_from.get(addr, ())):
@@ -678,9 +779,23 @@ class RecursiveDisassembler:
         return ins_by_addr
 
     def _clear_owned_instructions_from(self, fn_start, min_addr, max_addr=None):
-        for addr in sorted(
-            addr for addr in self.disassembly.instructions if self.disassembly.ins2fn.get(addr) == fn_start
-        ):
+        instruction_starts = {
+            ins[0]
+            for block in self.disassembly.functions.get(fn_start, [])
+            for ins in block
+            if min_addr <= ins[0] and (max_addr is None or ins[0] < max_addr)
+        }
+        if not instruction_starts:
+            instruction_starts = {
+                addr
+                for addr in self.disassembly.instructions
+                if min_addr <= addr
+                and (max_addr is None or addr < max_addr)
+                and self.disassembly.ins2fn.get(addr) == fn_start
+            }
+        for addr in sorted(instruction_starts):
+            if self.disassembly.ins2fn.get(addr) != fn_start:
+                continue
             if addr < min_addr:
                 continue
             if max_addr is not None and addr >= max_addr:
@@ -702,6 +817,60 @@ class RecursiveDisassembler:
         refs_from, refs_to = refs_snapshot
         self.disassembly.code_refs_from = {addr: set(targets) for addr, targets in refs_from.items()}
         self.disassembly.code_refs_to = {addr: set(sources) for addr, sources in refs_to.items()}
+
+    def _snapshot_code_refs_around_addrs(self, addrs):
+        refs_from_keys = set()
+        refs_to_keys = set()
+        for addr in addrs:
+            refs_from_keys.add(addr)
+            refs_to_keys.add(addr)
+            refs_to_keys.update(self.disassembly.code_refs_from.get(addr, ()))
+            refs_from_keys.update(self.disassembly.code_refs_to.get(addr, ()))
+        return (
+            {
+                addr: set(self.disassembly.code_refs_from[addr]) if addr in self.disassembly.code_refs_from else None
+                for addr in refs_from_keys
+            },
+            {
+                addr: set(self.disassembly.code_refs_to[addr]) if addr in self.disassembly.code_refs_to else None
+                for addr in refs_to_keys
+            },
+        )
+
+    def _restore_code_refs_around_addrs(self, refs_snapshot):
+        refs_from, refs_to = refs_snapshot
+        for addr, targets in refs_from.items():
+            if targets is None:
+                self.disassembly.code_refs_from.pop(addr, None)
+            else:
+                self.disassembly.code_refs_from[addr] = set(targets)
+        for addr, sources in refs_to.items():
+            if sources is None:
+                self.disassembly.code_refs_to.pop(addr, None)
+            else:
+                self.disassembly.code_refs_to[addr] = set(sources)
+
+    def _discard_function(self, fn_start):
+        blocks = self.disassembly.functions.pop(fn_start, None)
+        if blocks:
+            for block in blocks:
+                for ins in block:
+                    addr, size = ins[0], ins[1]
+                    self._purge_code_refs_for_addr(addr)
+                    if self.disassembly.ins2fn.get(addr) == fn_start:
+                        self.disassembly.instructions.pop(addr, None)
+                        for byte_offset in range(size):
+                            mapped = addr + byte_offset
+                            if self.disassembly.ins2fn.get(mapped) == fn_start:
+                                self.disassembly.code_map.pop(mapped, None)
+                                self.disassembly.ins2fn.pop(mapped, None)
+        self.disassembly.function_borders.pop(fn_start, None)
+        if hasattr(self.fc_manager, "removeBorder"):
+            self.fc_manager.removeBorder(fn_start)
+        self.disassembly.function_symbols.pop(fn_start, None)
+        self.disassembly.recursive_functions.discard(fn_start)
+        self.disassembly.leaf_functions.discard(fn_start)
+        self.disassembly.thunk_functions.discard(fn_start)
 
     def _interior_split_target_has_prologue(self, target):
         cache = getattr(self, "_interior_prologue_cache", None)
@@ -733,7 +902,7 @@ class RecursiveDisassembler:
         fmin, fmax = borders
         return all(fmin <= ref_from < fmax for ref_from in ref_froms)
 
-    def _should_split_interior_code_ref_target(self, target, owner, ref_froms):
+    def _should_split_interior_code_ref_target(self, target, owner, ref_froms, instruction_details=None):
         if target in self.disassembly.functions:
             return False
         if self.disassembly.ins2fn.get(target) != owner:
@@ -750,6 +919,9 @@ class RecursiveDisassembler:
         refs_parent_local = self._interior_code_refs_are_parent_local(owner, ref_froms)
         has_call_ref = any(self._instruction_mnemonic_base(ref_from) in CALL_INS for ref_from in ref_froms)
         has_jmp_ref = any(self._instruction_mnemonic_base(ref_from) in JMP_INS for ref_from in ref_froms)
+        has_direct_branch_ref = self._direct_branch_gap_recovery_allowed() and self._is_direct_branch_ref_target(
+            target, ref_froms, instruction_details
+        )
         if not has_call_ref and not has_jmp_ref:
             return False
         if refs_parent_local and parent_span <= min_parent_span:
@@ -757,13 +929,17 @@ class RecursiveDisassembler:
         if has_jmp_ref and not has_call_ref:
             if parent_span <= min_parent_span:
                 return False
+            if has_direct_branch_ref:
+                return True
             return self._interior_split_target_has_prologue(target)
         if refs_parent_local:
-            return self._interior_split_target_has_prologue(target)
+            return has_direct_branch_ref or self._interior_split_target_has_prologue(target)
         # External call into a large merged parent: split without prologue (IDA-style nested entry).
         return has_call_ref
 
-    def _split_function_at_interior_target(self, parent_start, split_addr, reference_source, cbAnalysisTimeout=None):
+    def _split_function_at_interior_target(
+        self, parent_start, split_addr, reference_source, cbAnalysisTimeout=None, preserve_existing_starts=False
+    ):
         if split_addr in self.disassembly.functions or split_addr not in self.disassembly.code_map:
             return False
         if self.disassembly.ins2fn.get(split_addr) != parent_start:
@@ -775,7 +951,7 @@ class RecursiveDisassembler:
         full_parent_ins = self._collect_owned_instruction_map(parent_start)
         if not full_parent_ins:
             return False
-        code_refs_snapshot = self._snapshot_code_refs()
+        code_refs_snapshot = self._snapshot_code_refs_around_addrs(full_parent_ins)
         if parent_start <= split_addr:
             parent_ins = self._collect_owned_instruction_map(parent_start, max_addr=split_addr)
             if not parent_ins:
@@ -788,18 +964,33 @@ class RecursiveDisassembler:
             parent_ins = self._collect_owned_instruction_map(parent_start)
             if not parent_ins:
                 self._rebuild_merged_function(parent_start, full_parent_ins)
-                self._restore_code_refs(code_refs_snapshot)
+                self._restore_code_refs_around_addrs(code_refs_snapshot)
                 return False
             self._rebuild_merged_function(parent_start, parent_ins)
         self.fc_manager.addCandidate(split_addr, reference_source=reference_source)
         if not self._consume_gap_budget():
             self._rebuild_merged_function(parent_start, full_parent_ins)
-            self._restore_code_refs(code_refs_snapshot)
+            self._restore_code_refs_around_addrs(code_refs_snapshot)
             return False
-        self.analyzeFunction(split_addr)
+        state = self.analyzeFunction(split_addr)
         if split_addr not in self.disassembly.functions:
+            if state is not None and hasattr(state, "revertAnalysis"):
+                state.revertAnalysis()
             self._rebuild_merged_function(parent_start, full_parent_ins)
-            self._restore_code_refs(code_refs_snapshot)
+            self._restore_code_refs_around_addrs(code_refs_snapshot)
+            return False
+        if preserve_existing_starts and parent_start <= split_addr:
+            split_region_starts = [addr for addr in full_parent_ins if addr >= split_addr]
+        elif preserve_existing_starts:
+            split_region_starts = [addr for addr in full_parent_ins if split_addr <= addr < parent_start]
+        else:
+            split_region_starts = []
+        max_lost_starts = getattr(self.config, "GAP_DIRECT_BRANCH_SPLIT_MAX_LOST_INSTRUCTIONS", 128)
+        lost_starts = [addr for addr in split_region_starts if addr not in self.disassembly.instructions]
+        if preserve_existing_starts and len(lost_starts) > max_lost_starts:
+            self._discard_function(split_addr)
+            self._rebuild_merged_function(parent_start, full_parent_ins)
+            self._restore_code_refs_around_addrs(code_refs_snapshot)
             return False
         return True
 
@@ -810,8 +1001,13 @@ class RecursiveDisassembler:
 
         split_jobs = []
         pending_targets = {}
+        instruction_details = self._instruction_detail_map()
+        from smda.intel.definitions import CALL_INS, JMP_INS
+
+        call_or_jmp_mnemonics = set(CALL_INS) | set(JMP_INS)
         for addr_from, targets in self.disassembly.code_refs_from.items():
-            if not self._is_call_or_jmp_insn(addr_from):
+            instruction = self.disassembly.instructions.get(addr_from)
+            if instruction is None or instruction[0].split(" ")[-1] not in call_or_jmp_mnemonics:
                 continue
             for target in targets:
                 if target in self.disassembly.functions:
@@ -825,23 +1021,30 @@ class RecursiveDisassembler:
                         continue
                     pending_targets[target] = (owner, ref_froms)
         for target, (owner, ref_froms) in pending_targets.items():
-            if not self._should_split_interior_code_ref_target(target, owner, ref_froms):
+            if not self._should_split_interior_code_ref_target(target, owner, ref_froms, instruction_details):
                 continue
             if not self.fc_manager._passesCodeFilter(target):
                 continue
-            split_jobs.append((target, owner, min(ref_froms)))
+            preserve_existing_starts = self._is_direct_branch_ref_target(
+                target, ref_froms, instruction_details
+            ) and not self._interior_split_target_has_prologue(target)
+            split_jobs.append((target, owner, min(ref_froms), preserve_existing_starts))
 
         target_limit = getattr(self.config, "GAP_INTERIOR_CODE_REF_SPLIT_LIMIT", 512)
         if target_limit <= 0:
             return
-        for target, owner, reference_source in sorted(split_jobs, key=lambda job: job[0])[:target_limit]:
+        for target, owner, reference_source, preserve_existing_starts in sorted(split_jobs, key=lambda job: job[0])[
+            :target_limit
+        ]:
             if cbAnalysisTimeout and cbAnalysisTimeout():
                 break
             if not self._gap_budget_remaining():
                 break
             if not self._preflight_interior_split_target(target, owner):
                 continue
-            self._split_function_at_interior_target(owner, target, reference_source, cbAnalysisTimeout)
+            self._split_function_at_interior_target(
+                owner, target, reference_source, cbAnalysisTimeout, preserve_existing_starts
+            )
 
     def _resolve_lea_rip_relative_target(self, insn_addr):
         insn_meta = self.disassembly.instructions.get(insn_addr)
@@ -960,6 +1163,187 @@ class RecursiveDisassembler:
             targets.add(target)
         return targets
 
+    def _direct_branch_seed_functions(self):
+        seeds = set()
+        binary_info = self.disassembly.binary_info
+        if binary_info is not None:
+            oep = binary_info.getOep()
+            if oep is not None:
+                for candidate in (oep, (binary_info.base_addr or 0) + oep):
+                    owner = self._function_start_for_addr(candidate)
+                    if owner is not None:
+                        seeds.add(owner)
+        seeds.update(self.disassembly.exported_functions)
+        seeds.update(addr for addr, name in self.disassembly.function_symbols.items() if name)
+        seeds.update(self._external_inbound_function_starts())
+        return {fn_start for fn_start in seeds if fn_start in self.disassembly.functions}
+
+    def _direct_branch_target_owner(self, target):
+        if target in self.disassembly.functions:
+            return target
+        return self.disassembly.ins2fn.get(target)
+
+    def _direct_branch_instruction_index(self):
+        direct_branch_items = []
+        direct_branch_by_owner = {}
+        for owner, ins in self._iter_function_instructions():
+            ins_addr, _size, mnemonic, op_str, _bytes = ins
+            target = self._direct_branch_target(mnemonic, op_str)
+            if target is None:
+                continue
+            item = (owner, ins_addr, target)
+            direct_branch_items.append(item)
+            direct_branch_by_owner.setdefault(owner, []).append(item)
+        return direct_branch_items, direct_branch_by_owner
+
+    def _append_direct_branch_owner_to_index(self, owner, direct_branch_items, direct_branch_by_owner, indexed_owners):
+        if owner in indexed_owners:
+            return
+        indexed_owners.add(owner)
+        owner_items = []
+        for block in self.disassembly.functions.get(owner, []):
+            for ins in block:
+                ins_addr, _size, mnemonic, op_str, _bytes = ins
+                target = self._direct_branch_target(mnemonic, op_str)
+                if target is None:
+                    continue
+                item = (owner, ins_addr, target)
+                direct_branch_items.append(item)
+                owner_items.append(item)
+        if owner_items:
+            direct_branch_by_owner[owner] = owner_items
+
+    def _collect_unmapped_direct_branch_targets(
+        self, attempted, target_limit, source_functions=None, direct_branch_items=None
+    ):
+        targets = {}
+        mapped_target_owners = set()
+        if target_limit <= 0:
+            return targets, mapped_target_owners
+        if direct_branch_items is None:
+            direct_branch_items, _direct_branch_by_owner = self._direct_branch_instruction_index()
+        for owner, ins_addr, target in direct_branch_items:
+            if source_functions is not None and owner not in source_functions:
+                continue
+            if target is None or target in attempted:
+                continue
+            target_owner = self._direct_branch_target_owner(target)
+            if target_owner is not None:
+                self.disassembly.addCodeRefs(ins_addr, target)
+                mapped_target_owners.add(target_owner)
+                continue
+            if target in self.disassembly.data_map:
+                continue
+            if not self.disassembly.isAddrWithinMemoryImage(target):
+                continue
+            if not self.fc_manager._passesCodeFilter(target):
+                continue
+            targets.setdefault(target, set()).add(ins_addr)
+        return targets, mapped_target_owners
+
+    def _repairMappedDirectBranchRefs(self, direct_branch_items=None):
+        if direct_branch_items is None:
+            direct_branch_items, _direct_branch_by_owner = self._direct_branch_instruction_index()
+        for _owner, ins_addr, target in direct_branch_items:
+            if target in self.disassembly.code_map or target in self.disassembly.functions:
+                if target in self.disassembly.code_refs_from.get(ins_addr, ()):
+                    continue
+                self.disassembly.addCodeRefs(ins_addr, target)
+
+    def _direct_branch_recovery_priority(self, target, ref_froms, instruction_details):
+        owners = {instruction_details[ref_from][0] for ref_from in ref_froms if ref_from in instruction_details}
+        if any(owner in self.disassembly.exported_functions for owner in owners):
+            return (0, target)
+        if any(self.disassembly.function_symbols.get(owner) for owner in owners):
+            return (0, target)
+        binary_info = self.disassembly.binary_info
+        oep = binary_info.getOep() if binary_info is not None else None
+        if oep is not None:
+            oep_abs = binary_info.base_addr + oep
+            if any(owner in {oep, oep_abs} for owner in owners):
+                return (0, target)
+        if any(self._function_has_external_inbound_ref(owner) for owner in owners):
+            return (1, target)
+        return (2, target)
+
+    def _recoverUnmappedDirectBranchTargets(self, cbAnalysisTimeout=None):
+        if not hasattr(self.fc_manager, "addReferenceCandidate"):
+            return
+        if not self._intelInteriorGapEnabled():
+            return
+        if not self._direct_branch_gap_recovery_allowed():
+            return
+        target_limit = getattr(self.config, "GAP_DIRECT_BRANCH_TARGET_LIMIT", 512)
+        if target_limit <= 0:
+            return
+        max_rounds = getattr(self.config, "GAP_DIRECT_BRANCH_TARGET_ROUNDS", 8)
+        frontier_limit = getattr(self.config, "GAP_DIRECT_BRANCH_FRONTIER_LIMIT", 128)
+        attempted = set()
+        frontier = self._direct_branch_seed_functions()
+        if not frontier:
+            if len(self.disassembly.functions) > frontier_limit:
+                return
+            frontier = set(self.disassembly.functions)
+        direct_branch_items, direct_branch_by_owner = self._direct_branch_instruction_index()
+        indexed_owners = set(direct_branch_by_owner)
+        seen_frontier = set()
+        for _round in range(max_rounds):
+            if cbAnalysisTimeout and cbAnalysisTimeout():
+                break
+            if not self._gap_budget_remaining():
+                break
+            self._repairMappedDirectBranchRefs(direct_branch_items)
+            active_frontier = set(sorted(frontier - seen_frontier)[:frontier_limit])
+            if not active_frontier:
+                break
+            seen_frontier.update(active_frontier)
+            targets = self._collect_unmapped_direct_branch_targets(
+                attempted,
+                target_limit - len(attempted),
+                source_functions=active_frontier,
+                direct_branch_items=direct_branch_items,
+            )
+            targets, mapped_target_owners = targets
+            frontier.update(mapped_target_owners - seen_frontier)
+            if not targets:
+                if frontier - seen_frontier:
+                    continue
+                break
+            progress = False
+            instruction_details = self._instruction_detail_map()
+            sorted_targets = sorted(
+                targets.items(),
+                key=lambda item: self._direct_branch_recovery_priority(item[0], item[1], instruction_details),
+            )
+            for target, ref_froms in sorted_targets[: target_limit - len(attempted)]:
+                if cbAnalysisTimeout and cbAnalysisTimeout():
+                    return
+                if not self._gap_budget_remaining():
+                    return
+                attempted.add(target)
+                if target in self.disassembly.code_map or target in self.disassembly.data_map:
+                    continue
+                reference_source = min(ref_froms)
+                self.fc_manager.addReferenceCandidate(target, reference_source)
+                if not self._consume_gap_budget():
+                    return
+                before = len(self.disassembly.code_map)
+                self.analyzeFunction(target)
+                if target in self.disassembly.functions or len(self.disassembly.code_map) > before:
+                    for ref_from in ref_froms:
+                        self.disassembly.addCodeRefs(ref_from, target)
+                    target_owner = self._direct_branch_target_owner(target)
+                    if target_owner is not None:
+                        self._append_direct_branch_owner_to_index(
+                            target_owner, direct_branch_items, direct_branch_by_owner, indexed_owners
+                        )
+                        frontier.add(target_owner)
+                    progress = True
+                if len(attempted) >= target_limit:
+                    return
+            if not progress:
+                break
+
     def _recoverUnmappedCodeRefTargets(self, cbAnalysisTimeout=None):
         if not hasattr(self.fc_manager, "addReferenceCandidate"):
             return
@@ -968,16 +1352,27 @@ class RecursiveDisassembler:
         else:
             self._interior_prologue_cache = getattr(self, "_interior_prologue_cache", {})
             standard_span = getattr(self.config, "GAP_INTERIOR_HOLE_STANDARD_FUNCTION_SPAN", 0x10000)
+            instruction_details = self._instruction_detail_map()
+            from smda.intel.definitions import CALL_INS, JMP_INS
+
+            call_or_jmp_mnemonics = set(CALL_INS) | set(JMP_INS)
             targets = set()
             for target in self._unmapped_code_ref_targets():
                 ref_froms = self.disassembly.code_refs_to.get(target)
-                if not ref_froms or not any(self._is_call_or_jmp_insn(ref_from) for ref_from in ref_froms):
+                if not ref_froms or not any(
+                    (self.disassembly.instructions.get(ref_from) or ("",))[0].split(" ")[-1] in call_or_jmp_mnemonics
+                    for ref_from in ref_froms
+                ):
                     continue
                 parent = self.fc_manager.getContainingFunctionStart(target)
                 if parent is not None:
                     borders = self.disassembly.function_borders.get(parent)
                     parent_span = borders[1] - borders[0] if borders else 0
-                    if parent_span > standard_span and not self._interior_split_target_has_prologue(target):
+                    if (
+                        parent_span > standard_span
+                        and not self._is_direct_branch_ref_target(target, ref_froms, instruction_details)
+                        and not self._interior_split_target_has_prologue(target)
+                    ):
                         continue
                 targets.add(target)
         target_limit = getattr(self.config, "GAP_UNMAPPED_CODE_REF_TARGET_LIMIT", 512)
@@ -1166,6 +1561,7 @@ class RecursiveDisassembler:
         self._updateLabelProviders(binary_info)
         self._symbol_cache = {}
         self._api_cache = {}
+        self._direct_branch_target_cache = {}
         self.disassembly = DisassemblyResult()
         self.disassembly.smda_version = self.config.VERSION
         self.disassembly.setBinaryInfo(binary_info)

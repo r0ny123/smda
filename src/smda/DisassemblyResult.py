@@ -124,10 +124,11 @@ class DisassemblyResult:
     def getBlocksAsDict(self, function_addr):
         blocks = {}
         for block in self.functions[function_addr]:
-            instructions = []
-            for ins in block:
-                instructions.append(self._transformInstruction(ins))
-            blocks[instructions[0][0]] = instructions
+            instructions = [
+                [ins_addr, ins_raw_bytes.hex(), str(ins_mnem), str(ins_ops)]
+                for ins_addr, _, ins_mnem, ins_ops, ins_raw_bytes in block
+            ]
+            blocks[block[0][0]] = instructions
         return blocks
 
     def getInstructions(self, block):
@@ -212,12 +213,16 @@ class DisassemblyResult:
         return None
 
     def addCodeRefs(self, addr_from, addr_to):
-        refs_from = self.code_refs_from.get(addr_from, set())
-        refs_from.update([addr_to])
-        self.code_refs_from[addr_from] = refs_from
-        refs_to = self.code_refs_to.get(addr_to, set())
-        refs_to.update([addr_from])
-        self.code_refs_to[addr_to] = refs_to
+        refs_from = self.code_refs_from.get(addr_from)
+        if refs_from is None:
+            self.code_refs_from[addr_from] = {addr_to}
+        else:
+            refs_from.add(addr_to)
+        refs_to = self.code_refs_to.get(addr_to)
+        if refs_to is None:
+            self.code_refs_to[addr_to] = {addr_from}
+        else:
+            refs_to.add(addr_from)
 
     def removeCodeRefs(self, addr_from, addr_to):
         refs_from = self.code_refs_from.get(addr_from, set())
