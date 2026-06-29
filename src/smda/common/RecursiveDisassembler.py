@@ -540,12 +540,20 @@ class RecursiveDisassembler:
             state.instructions.append(ins)
             state.instruction_start_bytes.add(ins[0])
             state.jump_targets.add(ins[0])
+        from smda.intel.definitions import LOOP_INS
+
         for addr in sorted(ins_by_addr.keys()):
             if addr not in self.disassembly.code_refs_from:
                 continue
+            # The stored mnemonic may carry a mandatory prefix (e.g. "bnd jmp", "rep movsd");
+            # capstone puts the base opcode last, so take parts[-1] like every other prefix-aware
+            # site. Taken-edge branches (jcc/jmp and loop/loopne/loope) must set by_jump so their
+            # targets seed jump_targets and getBlocks() starts a block there; a plain call must not.
             parts = ins_by_addr[addr][2].split()
-            mnemonic = parts[0] if parts else ""
-            by_jump = mnemonic != "call" and (mnemonic.startswith("j") or mnemonic in state.END_MNEMONICS)
+            mnemonic = parts[-1] if parts else ""
+            by_jump = mnemonic != "call" and (
+                mnemonic.startswith("j") or mnemonic in LOOP_INS or mnemonic in state.END_MNEMONICS
+            )
             for target in self.disassembly.code_refs_from[addr]:
                 state.addCodeRef(addr, target, by_jump=by_jump)
 
@@ -1391,7 +1399,13 @@ class RecursiveDisassembler:
                 break
             if target in self.disassembly.code_map:
                 continue
-            self.fc_manager.addReferenceCandidate(target, min(self.disassembly.code_refs_to[target]))
+            # `targets` is collected up-front; a prior iteration's gap-merge can purge the sole
+            # inbound edge of a still-unmapped later target, popping its code_refs_to entry. Guard
+            # against that (the code_map check above does not cover a still-unmapped target).
+            ref_sources = self.disassembly.code_refs_to.get(target)
+            if not ref_sources:
+                continue
+            self.fc_manager.addReferenceCandidate(target, min(ref_sources))
             if not self._consume_gap_budget():
                 break
             self.analyzeFunction(target)
