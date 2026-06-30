@@ -269,6 +269,21 @@ class TestIntelDisassembler(unittest.TestCase):
 
         self.assertEqual(manager.candidates[0x1010].call_ref_sources, {0x1000})
 
+    def test_prefixed_call_keeps_fallthrough_in_same_block(self):
+        state = FunctionAnalysisState(0x1000, SimpleNamespace())
+        state.instructions = [
+            (0x1000, 6, "bnd call", "0x1010", b""),
+            (0x1006, 2, "xor", "eax, eax", b""),
+            (0x1008, 1, "ret", "", b""),
+        ]
+        state.instruction_start_bytes = {0x1000, 0x1006, 0x1008}
+        state.addCodeRef(0x1000, 0x1010, by_jump=False)
+        state.addCodeRef(0x1000, 0x1006, by_jump=False)
+
+        blocks = state.getBlocks()
+
+        self.assertEqual([[ins[0] for ins in block] for block in blocks], [[0x1000, 0x1006, 0x1008]])
+
     @staticmethod
     def _ins(mnemonic, op_str, address=0x1000, size=0):
         # (address, size, mnemonic, op_str) as produced by capstone disasm_lite
