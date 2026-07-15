@@ -51,7 +51,6 @@ jobs:
           {
             echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse"
             echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse"
-            echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-security main restricted universe multiverse"
           } | sudo tee /etc/apt/sources.list.d/ddebs.list >/dev/null
           sudo apt-get update
           mkdir -p "$RUNNER_TEMP/yara-x" "$RUNNER_TEMP/bin"
