@@ -58,7 +58,14 @@ def get_elf_header(path):
 def package_metadata(packages_dir):
     metadata = {}
     for package_file in sorted(list(packages_dir.glob("*.deb")) + list(packages_dir.glob("*.ddeb"))):
-        fields = run(["dpkg-deb", "-f", str(package_file), "Package", "Version", "Architecture"]).stdout.splitlines()
+        fields = run(
+            [
+                "dpkg-deb",
+                "-W",
+                "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
+                str(package_file),
+            ]
+        ).stdout.splitlines()
         if len(fields) != 3:
             raise ValueError(f"could not read metadata from {package_file}")
         metadata[fields[0]] = {

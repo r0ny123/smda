@@ -85,11 +85,20 @@ class AArch64ElfTargetCollectorTestSuite(unittest.TestCase):
         with TemporaryDirectory() as directory:
             package_file = Path(directory) / "libc6_1_arm64.deb"
             package_file.write_bytes(b"package")
-            with patch.object(COLLECTOR, "run", return_value=SimpleNamespace(stdout="libc6\n1\narm64\n")):
+            with patch.object(COLLECTOR, "run", return_value=SimpleNamespace(stdout="libc6\n1\narm64\n")) as mocked_run:
                 metadata = COLLECTOR.package_metadata(Path(directory))
 
             self.assertEqual(metadata["libc6"]["version"], "1")
             self.assertEqual(metadata["libc6"]["deb_sha256"], hashlib.sha256(b"package").hexdigest())
+            self.assertEqual(
+                mocked_run.call_args.args[0],
+                [
+                    "dpkg-deb",
+                    "-W",
+                    "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
+                    str(package_file),
+                ],
+            )
 
     def test_write_artifact_deduplicates_binaries_and_records_matches(self):
         with TemporaryDirectory() as directory:
