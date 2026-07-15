@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$WORK_DIR/packages" "$WORK_DIR/runtime" "$WORK_DIR/debug"
           runtime_packages=(libc6 libgcc-s1 libstdc++6 libunwind8 zlib1g libssl3t64)
-          debug_packages=(libc6-dbgsym libgcc-s1-dbgsym libstdc++6-dbgsym libunwind8-dbgsym zlib1g-dbgsym libssl3t64-dbgsym)
+          debug_packages=(libc6-dbg libgcc-s1-dbgsym libstdc++6-dbgsym libunwind8-dbgsym zlib1g-dbgsym libssl3t64-dbgsym)
           for package in "${runtime_packages[@]}" "${debug_packages[@]}"; do
             (cd "$WORK_DIR/packages" && apt-get download "$package")
           done
