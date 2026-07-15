@@ -1,0 +1,142 @@
+name: Collect AArch64 ELF Targets
+
+on:
+  push:
+    branches: [ci/aarch64-elf-targets]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  collect:
+    name: Collect AArch64 ELF .eh_frame Targets
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      YARA_X_VERSION: v1.19.0
+      YARA_X_SHA256: 20443fc16081c68f7a2ca070feb84ae33a89c7dc726851bf050690e55937db77
+      ARTIFACT_DIR: collection-output
+      WORK_DIR: collection-work
+      RULES_SOURCE: tests/aarch64_elf_eh_frame_targets.yar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize failure artifact
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$RULES_SOURCE" "$ARTIFACT_DIR/"
+          : > "$ARTIFACT_DIR/manifest.jsonl"
+          printf 'name\tversion\tarchitecture\tdeb_filename\tdeb_sha256\n' > "$ARTIFACT_DIR/packages.tsv"
+          printf '%s\n' '{"schema_version":1,"status":"error","candidate_count":0,"match_record_count":0,"unique_binary_count":0,"error":"collection did not complete"}' > "$ARTIFACT_DIR/summary.json"
+
+      - name: Install collection tools
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends elfutils jq ubuntu-dbgsym-keyring
+          {
+            echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse"
+            echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse"
+            echo "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-security main restricted universe multiverse"
+          } | sudo tee /etc/apt/sources.list.d/ddebs.list >/dev/null
+          sudo apt-get update
+          mkdir -p "$RUNNER_TEMP/yara-x" "$RUNNER_TEMP/bin"
+          curl --fail --location --silent --show-error \
+            "https://github.com/VirusTotal/yara-x/releases/download/${YARA_X_VERSION}/yara-x-${YARA_X_VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
+            --output "$RUNNER_TEMP/yara-x.tar.gz"
+          echo "${YARA_X_SHA256}  $RUNNER_TEMP/yara-x.tar.gz" | sha256sum --check --status
+          tar --extract --gzip --file "$RUNNER_TEMP/yara-x.tar.gz" --directory "$RUNNER_TEMP/yara-x"
+          install -m 0755 "$(find "$RUNNER_TEMP/yara-x" -type f -name yr -print -quit)" "$RUNNER_TEMP/bin/yr"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Record runner and tool metadata
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          {
+            echo "runner_label=ubuntu-24.04-arm"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            echo "image_os=${ImageOS}"
+            echo "image_version=${ImageVersion}"
+            uname -a
+            yr --version
+            eu-unstrip --version | head -n 1
+          } | tee "$ARTIFACT_DIR/runner-metadata.txt"
+
+      - name: Download and unpack package pairs
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK_DIR/packages" "$WORK_DIR/runtime" "$WORK_DIR/debug"
+          runtime_packages=(libc6 libgcc-s1 libstdc++6 libunwind8 zlib1g libssl3t64)
+          debug_packages=(libc6-dbgsym libgcc-s1-dbgsym libstdc++6-dbgsym libunwind8-dbgsym zlib1g-dbgsym libssl3t64-dbgsym)
+          for package in "${runtime_packages[@]}" "${debug_packages[@]}"; do
+            (cd "$WORK_DIR/packages" && apt-get download "$package")
+          done
+          find_package() {
+            find "$WORK_DIR/packages" -maxdepth 1 -type f \( -name "$1"'_*.deb' -o -name "$1"'_*.ddeb' \) -print -quit
+          }
+          for package in "${runtime_packages[@]}"; do
+            package_file="$(find_package "$package")"
+            test -n "$package_file"
+            dpkg-deb --extract "$package_file" "$WORK_DIR/runtime/$package"
+          done
+          for package in "${debug_packages[@]}"; do
+            package_file="$(find_package "$package")"
+            test -n "$package_file"
+            dpkg-deb --extract "$package_file" "$WORK_DIR/debug/$package"
+          done
+
+      - name: Compile candidate rule
+        run: |
+          set -euo pipefail
+          yr fmt --check "$RULES_SOURCE"
+          yr compile --output "$WORK_DIR/aarch64-elf-targets.yarc" "$RULES_SOURCE"
+
+      - name: Reconstruct and collect matching binaries
+        run: |
+          set -euo pipefail
+          python .github/workflows/scripts/collect_aarch64_elf_targets.py \
+            --runtime-root "$WORK_DIR/runtime" \
+            --debug-root "$WORK_DIR/debug" \
+            --packages-dir "$WORK_DIR/packages" \
+            --reconstructed-root "$WORK_DIR/reconstructed" \
+            --compiled-rules "$WORK_DIR/aarch64-elf-targets.yarc" \
+            --rules-source "$RULES_SOURCE" \
+            --yr yr \
+            --output-dir "$ARTIFACT_DIR" \
+            --source-suite noble \
+            --runner-label ubuntu-24.04-arm \
+            --runner-os "$RUNNER_OS" \
+            --runner-arch "$RUNNER_ARCH" \
+            --runner-image "${ImageOS}-${ImageVersion}" \
+            --yara-version "$(yr --version)"
+
+      - name: Upload collected binaries and manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aarch64-elf-eh-frame-targets
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require at least one matched binary
+        if: always()
+        run: |
+          set -euo pipefail
+          jq --exit-status '.status == "matched" and .unique_binary_count > 0' "$ARTIFACT_DIR/summary.json"
