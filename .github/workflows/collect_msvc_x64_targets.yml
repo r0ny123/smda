@@ -1,0 +1,134 @@
+name: Collect MSVC x64 Targets
+
+on:
+  push:
+    branches: [ci/msvc-x64-targets]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  collect:
+    name: Collect MSVC x64 PE/PDB Targets
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      ARTIFACT_DIR: collection-output
+      CONTEXT_FILE: collection-context.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize failure artifact
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:ARTIFACT_DIR | Out-Null
+          Set-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/manifest.jsonl" -Value ""
+          @{
+            schema_version = 1
+            status = "error"
+            pe_debug_candidate_count = 0
+            match_record_count = 0
+            unique_binary_count = 0
+            unique_symbol_count = 0
+            error = "collection did not complete"
+          } | ConvertTo-Json | Set-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/summary.json"
+          @{
+            schema_version = 1
+            status = "error"
+            runner = @{
+              label = "windows-2022"
+              os = $env:RUNNER_OS
+              architecture = $env:RUNNER_ARCH
+              image = "$env:ImageOS-$env:ImageVersion"
+            }
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/toolchain.json"
+          @(
+            "runner_label=windows-2022"
+            "runner_os=$env:RUNNER_OS"
+            "runner_arch=$env:RUNNER_ARCH"
+            "image_os=$env:ImageOS"
+            "image_version=$env:ImageVersion"
+          ) | Set-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/runner-metadata.txt"
+
+      - name: Resolve Visual Studio toolchain
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere was not found" }
+          $visualStudio = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json)
+          if ($null -eq $visualStudio) { throw "No Visual Studio instance with MSVC x64 tools was found" }
+          if ($visualStudio -is [System.Array]) { $visualStudio = $visualStudio[0] }
+          $toolsetsRoot = Join-Path $visualStudio.installationPath "VC\Tools\MSVC"
+          $toolset = Get-ChildItem -Path $toolsetsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if ($null -eq $toolset) { throw "No MSVC toolset was found" }
+          $sourceRoot = Join-Path $toolset.FullName "bin\Hostx64\x64"
+          if (-not (Test-Path $sourceRoot)) { throw "MSVC x64 tool directory was not found: $sourceRoot" }
+          $pdbutilFromPath = Get-Command llvm-pdbutil.exe -ErrorAction SilentlyContinue
+          $pdbutilCandidates = @(
+            $(if ($null -ne $pdbutilFromPath) { $pdbutilFromPath.Source })
+            (Join-Path $env:ProgramFiles "LLVM\bin\llvm-pdbutil.exe")
+            (Join-Path $visualStudio.installationPath "VC\Tools\Llvm\x64\bin\llvm-pdbutil.exe")
+          )
+          $pdbutil = $pdbutilCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if ($null -eq $pdbutil) { throw "llvm-pdbutil.exe was not found" }
+          $pdbutilVersion = (& $pdbutil --version | Select-Object -First 1).Trim()
+          @{
+            schema_version = 1
+            source = "Visual Studio 2022 x64 toolchain"
+            collection_root = "VC\Tools\MSVC\$($toolset.Name)\bin\Hostx64\x64"
+            msvc_toolset_version = $toolset.Name
+            visual_studio = @{
+              display_name = $visualStudio.displayName
+              product_version = $visualStudio.installationVersion
+              installation_path = $visualStudio.installationPath
+            }
+            runner = @{
+              label = "windows-2022"
+              os = $env:RUNNER_OS
+              architecture = $env:RUNNER_ARCH
+              image = "$env:ImageOS-$env:ImageVersion"
+            }
+            llvm_pdbutil_version = $pdbutilVersion
+          } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 -Path $env:CONTEXT_FILE
+          @(
+            "visual_studio_version=$($visualStudio.installationVersion)"
+            "msvc_toolset_version=$($toolset.Name)"
+            "llvm_pdbutil_version=$pdbutilVersion"
+          ) | Add-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/runner-metadata.txt"
+          "MSVC_SOURCE_ROOT=$sourceRoot" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+          "LLVM_PDBUTIL=$pdbutil" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+
+      - name: Collect verified PE/PDB pairs
+        run: |
+          python .github/workflows/scripts/collect_msvc_x64_targets.py `
+            --source-root "$env:MSVC_SOURCE_ROOT" `
+            --llvm-pdbutil "$env:LLVM_PDBUTIL" `
+            --context-json $env:CONTEXT_FILE `
+            --output-dir $env:ARTIFACT_DIR
+
+      - name: Upload PE/PDB targets
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: msvc-x64-pdb-targets
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require at least one verified pair
+        if: always()
+        run: |
+          $summary = Get-Content -Raw "$env:ARTIFACT_DIR/summary.json" | ConvertFrom-Json
+          if ($summary.status -ne "matched" -or [int]$summary.unique_binary_count -lt 1) {
+            throw "No verified MSVC x64 PE/PDB pairs were collected"
+          }
