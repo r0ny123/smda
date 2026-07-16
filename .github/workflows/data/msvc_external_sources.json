@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "description": "Pinned Windows x64 executable/PDB release pairs from independently maintained open-source applications.",
+  "sources": [
+    {
+      "id": "obs-studio-32.1.2",
+      "project": "obsproject/obs-studio",
+      "version": "32.1.2",
+      "license": "GPL-2.0-or-later",
+      "pe_asset": "OBS-Studio-32.1.2-Windows-x64.zip",
+      "pe_url": "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64.zip",
+      "pe_sha256": "8d97e4563bd8d22d03e63042aa7dccede1d555c9bd35ce8a9e5019b0d0201bf",
+      "pdb_asset": "OBS-Studio-32.1.2-Windows-x64-PDBs.zip",
+      "pdb_url": "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-PDBs.zip",
+      "pdb_sha256": "8105fed359f3437819264b0ebb1c50db6d3bb30de1a65d4a3049e3c14f88deb8"
+    },
+    {
+      "id": "winmerge-2.16.56.2",
+      "project": "WinMerge/winmerge",
+      "version": "2.16.56.2",
+      "license": "GPL-2.0-or-later",
+      "pe_asset": "winmerge-2.16.56.2-x64-exe.zip",
+      "pe_url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.56.2/winmerge-2.16.56.2-x64-exe.zip",
+      "pe_sha256": "a436deb990b5e651e50e97ec056c1c0da12f4947c69a350384fd2590d47a6481",
+      "pdb_asset": "winmerge-2.16.56.2-x64-pdb.7z",
+      "pdb_url": "https://github.com/WinMerge/winmerge/releases/download/v2.16.56.2/winmerge-2.16.56.2-x64-pdb.7z",
+      "pdb_sha256": "df6f0498263677aba30eccfb03c1dc04ae01bb1cff19d876a829b1162f93c622"
+    },
+    {
+      "id": "mpc-hc-1.7.13",
+      "project": "mpc-hc/mpc-hc",
+      "version": "1.7.13",
+      "license": "GPL-3.0-or-later",
+      "pe_asset": "MPC-HC.1.7.13.x64.7z",
+      "pe_url": "https://github.com/mpc-hc/mpc-hc/releases/download/1.7.13/MPC-HC.1.7.13.x64.7z",
+      "pe_sha256": "1ce281b255ba4cd0762aed63c59e0cfa5be471422bd89676af07f2e3bfc6a5c4",
+      "pdb_asset": "MPC-HC.1.7.13.x64.pdb.7z",
+      "pdb_url": "https://github.com/mpc-hc/mpc-hc/releases/download/1.7.13/MPC-HC.1.7.13.x64.pdb.7z",
+      "pdb_sha256": "aafa92c4c45b9ddba80ea652b5fe159b76eedd2e3eb3717b2503cacca3eb7392"
+    },
+    {
+      "id": "mpc-hc-filters-1.7.13",
+      "project": "mpc-hc/mpc-hc",
+      "version": "1.7.13",
+      "license": "GPL-3.0-or-later",
+      "pe_asset": "MPC-HC_standalone_filters.1.7.13.x64.7z",
+      "pe_url": "https://github.com/mpc-hc/mpc-hc/releases/download/1.7.13/MPC-HC_standalone_filters.1.7.13.x64.7z",
+      "pe_sha256": "87b757fa190cbb381c643aee4f0aedffb0cf50becbb401e642aea85a69179083",
+      "pdb_asset": "MPC-HC_standalone_filters.1.7.13.x64.pdb.7z",
+      "pdb_url": "https://github.com/mpc-hc/mpc-hc/releases/download/1.7.13/MPC-HC_standalone_filters.1.7.13.x64.pdb.7z",
+      "pdb_sha256": "721e82b334173be7915c346887f112e1bad8770bbb738c6a15866f0c846e2e17"
+    },
+    {
+      "id": "x64dbg-2026.05.27",
+      "project": "x64dbg/x64dbg",
+      "version": "2026.05.27",
+      "license": "GPL-3.0-or-later",
+      "pe_asset": "snapshot_2026-05-27_12-11.zip",
+      "pe_url": "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/snapshot_2026-05-27_12-11.zip",
+      "pe_sha256": "d41966dfc5b435a372798245300ca0ab7bb8e48bdbf48512c6fb20fcca427697",
+      "pdb_asset": "symbols-snapshot_2026-05-27_12-11.zip",
+      "pdb_url": "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/symbols-snapshot_2026-05-27_12-11.zip",
+      "pdb_sha256": "37e37f2f9312d8c3bc75610508c191ac3404d8d4f21c8409b3961945b772847c"
+    }
+  ]
+}

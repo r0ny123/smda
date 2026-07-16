@@ -120,6 +120,33 @@ def test_discover_candidates_rejects_missing_ambiguous_and_mismatched_pdbs():
     assert [candidate.pe_path.name for candidate in candidates] == ["valid.exe"]
 
 
+def test_discover_candidates_scopes_pdb_matching_per_source_root():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        first = root / "first"
+        second = root / "second"
+        first.mkdir()
+        second.mkdir()
+        guid = uuid.UUID("12345678-1234-5678-9abc-def012345678")
+        make_pe(first / "one.exe", guid, 1, "shared.pdb")
+        make_pe(second / "two.exe", guid, 1, "shared.pdb")
+        (first / "shared.pdb").write_bytes(b"first")
+        (second / "shared.pdb").write_bytes(b"second")
+
+        with patch.object(
+            COLLECTOR,
+            "get_pdb_identity",
+            return_value=COLLECTOR.PdbIdentity(str(guid), 1),
+        ):
+            candidates, count = COLLECTOR.discover_candidates([first, second], "llvm-pdbutil")
+
+    assert count == 2
+    assert [(candidate.source_id, candidate.pe_path.name) for candidate in candidates] == [
+        ("first", "one.exe"),
+        ("second", "two.exe"),
+    ]
+
+
 def test_write_artifact_deduplicates_pe_and_pdb_and_records_identity():
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -149,6 +176,7 @@ def test_write_artifact_deduplicates_pe_and_pdb_and_records_identity():
         assert records[0]["pe"]["sha256"] == hashlib.sha256(b"same pe").hexdigest()
         assert records[0]["pe"]["codeview"]["guid"] == identity.guid
         assert records[0]["pdb"]["guid"] == identity.guid
+        assert records[0]["pe"]["source_path"] == "source/one.exe"
 
 
 def test_manifest_path_uses_posix_separators_for_windows_paths():

@@ -25,6 +25,7 @@ jobs:
       ARTIFACT_DIR: collection-output
       CONTEXT_FILE: collection-context.json
       EXPECTED_CORPUS_TARGET_COUNT: 6
+      EXPECTED_EXTERNAL_SOURCE_COUNT: 5
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -84,6 +85,9 @@ jobs:
           if ($null -eq $pdbutil) { throw "llvm-pdbutil.exe was not found" }
           $pdbutilVersionLines = @(& $pdbutil --version | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           $pdbutilVersion = $pdbutilVersionLines -join " | "
+          $externalManifestPath = Join-Path $env:GITHUB_WORKSPACE ".github/workflows/data/msvc_external_sources.json"
+          $externalManifest = Get-Content -Raw $externalManifestPath | ConvertFrom-Json
+          Copy-Item -Force $externalManifestPath "$env:ARTIFACT_DIR/external-sources.json"
           $corpusVariants = @(
             [ordered]@{ name = "c-o1-nogs"; source = "tests/msvc_x64_corpus/prologue_c.c"; compiler_options = @("/O1", "/Ob0", "/GS-"); linker_options = @() }
             [ordered]@{ name = "c-o2-gs"; source = "tests/msvc_x64_corpus/prologue_c.c"; compiler_options = @("/O2", "/Ob2", "/GS"); linker_options = @() }
@@ -104,7 +108,7 @@ jobs:
           }
           @{
             schema_version = 1
-            source = "controlled MSVC 2022 x64 prologue corpus"
+            source = "controlled MSVC 2022 x64 prologue corpus plus pinned independent application releases"
             repository = $env:GITHUB_REPOSITORY
             ref = $env:GITHUB_REF
             commit = $env:GITHUB_SHA
@@ -122,6 +126,7 @@ jobs:
               image = "$env:ImageOS-$env:ImageVersion"
             }
             llvm_pdbutil_version = $pdbutilVersion
+            external_sources = @($externalManifest.sources)
             corpus = @{
               source_directory = "tests/msvc_x64_corpus"
               sources = $corpusSources
@@ -135,6 +140,40 @@ jobs:
           ) | Add-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/runner-metadata.txt"
           "VS_DEVCMD=$vsDevCmd" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
           "LLVM_PDBUTIL=$pdbutil" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+
+      - name: Download independent application PE/PDB releases
+        run: |
+          $context = Get-Content -Raw $env:CONTEXT_FILE | ConvertFrom-Json
+          $sevenZipCandidates = @(
+            (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+            (Join-Path ${env:ProgramFiles} "7-Zip\7z.exe")
+            (Join-Path ${env:ProgramFiles(x86)} "7-Zip\7z.exe")
+          )
+          $sevenZip = $sevenZipCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if ($null -eq $sevenZip) { throw "7-Zip was not found on the windows-2022 runner" }
+          $externalRoot = Join-Path $env:GITHUB_WORKSPACE "msvc-external-build"
+          New-Item -ItemType Directory -Force -Path $externalRoot | Out-Null
+          $sourceRoots = @()
+          foreach ($source in @($context.external_sources)) {
+            $sourceRoot = Join-Path $externalRoot $source.id
+            New-Item -ItemType Directory -Force -Path $sourceRoot | Out-Null
+            foreach ($kind in @("pe", "pdb")) {
+              $asset = if ($kind -eq "pe") { $source.pe_asset } else { $source.pdb_asset }
+              $url = if ($kind -eq "pe") { $source.pe_url } else { $source.pdb_url }
+              $expected = if ($kind -eq "pe") { $source.pe_sha256 } else { $source.pdb_sha256 }
+              $archive = Join-Path $env:RUNNER_TEMP "$($source.id)-$kind-$asset"
+              Invoke-WebRequest -Uri $url -OutFile $archive
+              $actual = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+              if ($actual -ne $expected) { throw "SHA-256 mismatch for $asset: expected $expected, got $actual" }
+              & $sevenZip x $archive "-o$sourceRoot" -y | Out-Host
+              if ($LASTEXITCODE -ne 0) { throw "7-Zip failed for $asset" }
+              if ($kind -eq "pe") {
+                Get-ChildItem -Path $sourceRoot -Recurse -File -Filter "*.pdb" | Remove-Item -Force
+              }
+            }
+            $sourceRoots += $sourceRoot
+          }
+          "MSVC_EXTERNAL_ROOTS=$($sourceRoots -join '|')" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
 
       - name: Build controlled MSVC prologue corpus
         run: |
@@ -158,11 +197,12 @@ jobs:
 
       - name: Collect verified PE/PDB pairs
         run: |
-          python .github/workflows/scripts/collect_msvc_x64_targets.py `
-            --source-root "$env:MSVC_CORPUS_ROOT" `
-            --llvm-pdbutil "$env:LLVM_PDBUTIL" `
-            --context-json $env:CONTEXT_FILE `
-            --output-dir $env:ARTIFACT_DIR
+          $arguments = @(".github/workflows/scripts/collect_msvc_x64_targets.py", "--source-root", $env:MSVC_CORPUS_ROOT)
+          foreach ($root in ($env:MSVC_EXTERNAL_ROOTS -split '\|')) {
+            $arguments += @("--source-root", $root)
+          }
+          $arguments += @("--llvm-pdbutil", $env:LLVM_PDBUTIL, "--context-json", $env:CONTEXT_FILE, "--output-dir", $env:ARTIFACT_DIR)
+          python @arguments
 
       - name: Upload PE/PDB targets
         if: always()
@@ -177,6 +217,8 @@ jobs:
         if: always()
         run: |
           $summary = Get-Content -Raw "$env:ARTIFACT_DIR/summary.json" | ConvertFrom-Json
-          if ($summary.status -ne "matched" -or [int]$summary.unique_binary_count -lt [int]$env:EXPECTED_CORPUS_TARGET_COUNT) {
-            throw "Expected $env:EXPECTED_CORPUS_TARGET_COUNT verified MSVC x64 PE/PDB pairs"
+          $records = @(Get-Content "$env:ARTIFACT_DIR/manifest.jsonl" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+          $externalSourceCount = @($records | Where-Object { $_.pe.source_id -ne "msvc-corpus-build" } | Select-Object -ExpandProperty pe | Select-Object -ExpandProperty source_id -Unique).Count
+          if ($summary.status -ne "matched" -or [int]$summary.unique_binary_count -lt [int]$env:EXPECTED_CORPUS_TARGET_COUNT -or $externalSourceCount -lt [int]$env:EXPECTED_EXTERNAL_SOURCE_COUNT) {
+            throw "Expected the controlled corpus plus $env:EXPECTED_EXTERNAL_SOURCE_COUNT independent application sources"
           }

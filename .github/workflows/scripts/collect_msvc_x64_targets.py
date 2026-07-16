@@ -33,6 +33,8 @@ class Candidate:
     pdb_path: Path
     pe_identity: PeDebugIdentity
     pdb_identity: PdbIdentity
+    source_root: Path | None = None
+    source_id: str = ""
 
 
 def run(command):
@@ -125,29 +127,33 @@ def build_pdb_index(source_root):
     return index
 
 
-def discover_candidates(source_root, llvm_pdbutil):
-    pdb_index = build_pdb_index(source_root)
-    pdb_identity_cache = {}
+def discover_candidates(source_roots, llvm_pdbutil):
+    if isinstance(source_roots, Path):
+        source_roots = [source_roots]
     candidates = []
     pe_debug_candidate_count = 0
-    for pe_path in sorted(
-        path for path in source_root.rglob("*") if path.is_file() and path.suffix.lower() in {".exe", ".dll"}
-    ):
-        identity = parse_pe_debug_identity(pe_path)
-        if identity is None:
-            continue
-        pe_debug_candidate_count += 1
-        matching_paths = pdb_index.get(identity.pdb_filename.casefold(), [])
-        if len(matching_paths) != 1:
-            continue
-        pdb_path = matching_paths[0]
-        pdb_identity = pdb_identity_cache.get(pdb_path)
-        if pdb_identity is None:
-            pdb_identity = get_pdb_identity(llvm_pdbutil, pdb_path)
-            pdb_identity_cache[pdb_path] = pdb_identity
-        if identity.guid != pdb_identity.guid or identity.age != pdb_identity.age:
-            continue
-        candidates.append(Candidate(pe_path, pdb_path, identity, pdb_identity))
+    for source_root in source_roots:
+        pdb_index = build_pdb_index(source_root)
+        pdb_identity_cache = {}
+        source_id = source_root.name
+        for pe_path in sorted(
+            path for path in source_root.rglob("*") if path.is_file() and path.suffix.lower() in {".exe", ".dll"}
+        ):
+            identity = parse_pe_debug_identity(pe_path)
+            if identity is None:
+                continue
+            pe_debug_candidate_count += 1
+            matching_paths = pdb_index.get(identity.pdb_filename.casefold(), [])
+            if len(matching_paths) != 1:
+                continue
+            pdb_path = matching_paths[0]
+            pdb_identity = pdb_identity_cache.get(pdb_path)
+            if pdb_identity is None:
+                pdb_identity = get_pdb_identity(llvm_pdbutil, pdb_path)
+                pdb_identity_cache[pdb_path] = pdb_identity
+            if identity.guid != pdb_identity.guid or identity.age != pdb_identity.age:
+                continue
+            candidates.append(Candidate(pe_path, pdb_path, identity, pdb_identity, source_root, source_id))
     return candidates, pe_debug_candidate_count
 
 
@@ -177,11 +183,16 @@ def write_artifact(candidates, pe_debug_candidate_count, source_root, output_dir
     for candidate in candidates:
         pe_digest, staged_pe = stage_file(candidate.pe_path, binaries_dir, staged_binaries)
         pdb_digest, staged_pdb = stage_file(candidate.pdb_path, symbols_dir, staged_symbols)
+        candidate_root = candidate.source_root or source_root
+        source_id = candidate.source_id or candidate_root.name
+        pe_source_path = Path(source_id) / candidate.pe_path.relative_to(candidate_root)
+        pdb_source_path = Path(source_id) / candidate.pdb_path.relative_to(candidate_root)
         records.append(
             {
                 "schema_version": 1,
                 "pe": {
-                    "source_path": manifest_path(candidate.pe_path.relative_to(source_root)),
+                    "source_id": source_id,
+                    "source_path": manifest_path(pe_source_path),
                     "artifact_path": manifest_path(staged_pe.relative_to(output_dir)),
                     "sha256": pe_digest,
                     "size": candidate.pe_path.stat().st_size,
@@ -195,7 +206,8 @@ def write_artifact(candidates, pe_debug_candidate_count, source_root, output_dir
                     },
                 },
                 "pdb": {
-                    "source_path": manifest_path(candidate.pdb_path.relative_to(source_root)),
+                    "source_id": source_id,
+                    "source_path": manifest_path(pdb_source_path),
                     "artifact_path": manifest_path(staged_pdb.relative_to(output_dir)),
                     "sha256": pdb_digest,
                     "size": candidate.pdb_path.stat().st_size,
@@ -242,7 +254,7 @@ def write_error_artifact(output_dir, context, error):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--source-root", type=Path, action="append", required=True)
     parser.add_argument("--llvm-pdbutil", required=True)
     parser.add_argument("--context-json", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -254,7 +266,7 @@ def main():
     context = json.loads(args.context_json.read_text())
     try:
         candidates, pe_debug_candidate_count = discover_candidates(args.source_root, args.llvm_pdbutil)
-        summary = write_artifact(candidates, pe_debug_candidate_count, args.source_root, args.output_dir, context)
+        summary = write_artifact(candidates, pe_debug_candidate_count, args.source_root[0], args.output_dir, context)
     except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         summary = write_error_artifact(args.output_dir, context, error)
         print(json.dumps(summary, sort_keys=True))
