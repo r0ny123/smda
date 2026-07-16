@@ -161,6 +161,10 @@ def stage_file(path, directory, staged_by_hash):
     return digest, staged_path
 
 
+def manifest_path(path):
+    return path.as_posix()
+
+
 def write_artifact(candidates, pe_debug_candidate_count, source_root, output_dir, context):
     output_dir.mkdir(parents=True, exist_ok=True)
     binaries_dir = output_dir / "binaries"
@@ -177,8 +181,8 @@ def write_artifact(candidates, pe_debug_candidate_count, source_root, output_dir
             {
                 "schema_version": 1,
                 "pe": {
-                    "source_path": str(candidate.pe_path.relative_to(source_root)),
-                    "artifact_path": str(staged_pe.relative_to(output_dir)),
+                    "source_path": manifest_path(candidate.pe_path.relative_to(source_root)),
+                    "artifact_path": manifest_path(staged_pe.relative_to(output_dir)),
                     "sha256": pe_digest,
                     "size": candidate.pe_path.stat().st_size,
                     "machine": "AMD64",
@@ -191,8 +195,8 @@ def write_artifact(candidates, pe_debug_candidate_count, source_root, output_dir
                     },
                 },
                 "pdb": {
-                    "source_path": str(candidate.pdb_path.relative_to(source_root)),
-                    "artifact_path": str(staged_pdb.relative_to(output_dir)),
+                    "source_path": manifest_path(candidate.pdb_path.relative_to(source_root)),
+                    "artifact_path": manifest_path(staged_pdb.relative_to(output_dir)),
                     "sha256": pdb_digest,
                     "size": candidate.pdb_path.stat().st_size,
                     "guid": candidate.pdb_identity.guid,

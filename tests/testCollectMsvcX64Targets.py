@@ -4,7 +4,7 @@ import json
 import struct
 import sys
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -149,6 +149,10 @@ def test_write_artifact_deduplicates_pe_and_pdb_and_records_identity():
         assert records[0]["pe"]["sha256"] == hashlib.sha256(b"same pe").hexdigest()
         assert records[0]["pe"]["codeview"]["guid"] == identity.guid
         assert records[0]["pdb"]["guid"] == identity.guid
+
+
+def test_manifest_path_uses_posix_separators_for_windows_paths():
+    assert COLLECTOR.manifest_path(PureWindowsPath(r"binaries\digest-tool.exe")) == "binaries/digest-tool.exe"
 
 
 def test_write_artifact_marks_zero_matches_explicitly():
