@@ -9,7 +9,7 @@
       "license": "GPL-2.0-or-later",
       "pe_asset": "OBS-Studio-32.1.2-Windows-x64.zip",
       "pe_url": "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64.zip",
-      "pe_sha256": "8d97e4563bd8d22d03e63042aa7dccede1d555c9bd35ce8a9e5019b0d0201bf",
+      "pe_sha256": "8d97e4563bd8d22d03e63042aa7dccede1d555c9bd35ce8a9e5019b0d0201bf6",
       "pdb_asset": "OBS-Studio-32.1.2-Windows-x64-PDBs.zip",
       "pdb_url": "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-PDBs.zip",
       "pdb_sha256": "8105fed359f3437819264b0ebb1c50db6d3bb30de1a65d4a3049e3c14f88deb8"
