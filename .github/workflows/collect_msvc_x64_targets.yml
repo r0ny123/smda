@@ -24,6 +24,7 @@ jobs:
     env:
       ARTIFACT_DIR: collection-output
       CONTEXT_FILE: collection-context.json
+      EXPECTED_CORPUS_TARGET_COUNT: 6
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -71,8 +72,8 @@ jobs:
           $toolsetsRoot = Join-Path $visualStudio.installationPath "VC\Tools\MSVC"
           $toolset = Get-ChildItem -Path $toolsetsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
           if ($null -eq $toolset) { throw "No MSVC toolset was found" }
-          $sourceRoot = Join-Path $toolset.FullName "bin\Hostx64\x64"
-          if (-not (Test-Path $sourceRoot)) { throw "MSVC x64 tool directory was not found: $sourceRoot" }
+          $vsDevCmd = Join-Path $visualStudio.installationPath "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path $vsDevCmd)) { throw "VsDevCmd.bat was not found" }
           $pdbutilFromPath = Get-Command llvm-pdbutil.exe -ErrorAction SilentlyContinue
           $pdbutilCandidates = @(
             $(if ($null -ne $pdbutilFromPath) { $pdbutilFromPath.Source })
@@ -81,11 +82,33 @@ jobs:
           )
           $pdbutil = $pdbutilCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
           if ($null -eq $pdbutil) { throw "llvm-pdbutil.exe was not found" }
-          $pdbutilVersion = (& $pdbutil --version | Select-Object -First 1).Trim()
+          $pdbutilVersionLines = @(& $pdbutil --version | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          $pdbutilVersion = $pdbutilVersionLines -join " | "
+          $corpusVariants = @(
+            [ordered]@{ name = "c-o1-nogs"; source = "tests/msvc_x64_corpus/prologue_c.c"; compiler_options = @("/O1", "/Ob0", "/GS-"); linker_options = @() }
+            [ordered]@{ name = "c-o2-gs"; source = "tests/msvc_x64_corpus/prologue_c.c"; compiler_options = @("/O2", "/Ob2", "/GS"); linker_options = @() }
+            [ordered]@{ name = "cpp-od-gs"; source = "tests/msvc_x64_corpus/prologue_cpp.cpp"; compiler_options = @("/Od", "/Ob0", "/GS", "/EHsc"); linker_options = @() }
+            [ordered]@{ name = "cpp-o1-nogs"; source = "tests/msvc_x64_corpus/prologue_cpp.cpp"; compiler_options = @("/O1", "/Ob0", "/GS-", "/EHsc"); linker_options = @() }
+            [ordered]@{ name = "cpp-o2-gs"; source = "tests/msvc_x64_corpus/prologue_cpp.cpp"; compiler_options = @("/O2", "/Ob2", "/GS", "/EHsc"); linker_options = @() }
+            [ordered]@{ name = "cpp-o2-cfguard"; source = "tests/msvc_x64_corpus/prologue_cpp.cpp"; compiler_options = @("/O2", "/Ob2", "/GS", "/EHsc", "/guard:cf"); linker_options = @("/guard:cf") }
+          )
+          $corpusSources = @(
+            "tests/msvc_x64_corpus/prologue_c.c"
+            "tests/msvc_x64_corpus/prologue_cpp.cpp"
+          ) | Select-Object -Unique | ForEach-Object {
+            $sourcePath = Join-Path $env:GITHUB_WORKSPACE $_
+            [ordered]@{
+              path = $_
+              sha256 = (Get-FileHash -Algorithm SHA256 -Path $sourcePath).Hash.ToLowerInvariant()
+            }
+          }
           @{
             schema_version = 1
-            source = "Visual Studio 2022 x64 toolchain"
-            collection_root = "VC\Tools\MSVC\$($toolset.Name)\bin\Hostx64\x64"
+            source = "controlled MSVC 2022 x64 prologue corpus"
+            repository = $env:GITHUB_REPOSITORY
+            ref = $env:GITHUB_REF
+            commit = $env:GITHUB_SHA
+            collection_root = "msvc-corpus-build"
             msvc_toolset_version = $toolset.Name
             visual_studio = @{
               display_name = $visualStudio.displayName
@@ -99,19 +122,44 @@ jobs:
               image = "$env:ImageOS-$env:ImageVersion"
             }
             llvm_pdbutil_version = $pdbutilVersion
-          } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 -Path $env:CONTEXT_FILE
+            corpus = @{
+              source_directory = "tests/msvc_x64_corpus"
+              sources = $corpusSources
+              variants = $corpusVariants
+            }
+          } | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 -Path $env:CONTEXT_FILE
           @(
             "visual_studio_version=$($visualStudio.installationVersion)"
             "msvc_toolset_version=$($toolset.Name)"
             "llvm_pdbutil_version=$pdbutilVersion"
           ) | Add-Content -Encoding utf8 -Path "$env:ARTIFACT_DIR/runner-metadata.txt"
-          "MSVC_SOURCE_ROOT=$sourceRoot" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+          "VS_DEVCMD=$vsDevCmd" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
           "LLVM_PDBUTIL=$pdbutil" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+
+      - name: Build controlled MSVC prologue corpus
+        run: |
+          $context = Get-Content -Raw $env:CONTEXT_FILE | ConvertFrom-Json
+          $corpusRoot = Join-Path $env:GITHUB_WORKSPACE "msvc-corpus-build"
+          New-Item -ItemType Directory -Force -Path $corpusRoot | Out-Null
+          foreach ($variant in $context.corpus.variants) {
+            $source = Join-Path $env:GITHUB_WORKSPACE $variant.source
+            $variantRoot = Join-Path $corpusRoot $variant.name
+            New-Item -ItemType Directory -Force -Path $variantRoot | Out-Null
+            $executable = Join-Path $variantRoot "$($variant.name).exe"
+            $pdb = Join-Path $variantRoot "$($variant.name).pdb"
+            $compilerOptions = @($variant.compiler_options) -join " "
+            $linkerOptions = @($variant.linker_options) -join " "
+            $command = "call `"$env:VS_DEVCMD`" -arch=x64 -host_arch=x64 && cl.exe /nologo /Zi $compilerOptions `"$source`" /Fe:`"$executable`" /link /debug /pdb:`"$pdb`" $linkerOptions"
+            & cmd.exe /d /s /c $command
+            if ($LASTEXITCODE -ne 0) { throw "MSVC build failed for $($variant.name)" }
+            if (-not (Test-Path $executable) -or -not (Test-Path $pdb)) { throw "Missing output for $($variant.name)" }
+          }
+          "MSVC_CORPUS_ROOT=$corpusRoot" | Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
 
       - name: Collect verified PE/PDB pairs
         run: |
           python .github/workflows/scripts/collect_msvc_x64_targets.py `
-            --source-root "$env:MSVC_SOURCE_ROOT" `
+            --source-root "$env:MSVC_CORPUS_ROOT" `
             --llvm-pdbutil "$env:LLVM_PDBUTIL" `
             --context-json $env:CONTEXT_FILE `
             --output-dir $env:ARTIFACT_DIR
@@ -129,6 +177,6 @@ jobs:
         if: always()
         run: |
           $summary = Get-Content -Raw "$env:ARTIFACT_DIR/summary.json" | ConvertFrom-Json
-          if ($summary.status -ne "matched" -or [int]$summary.unique_binary_count -lt 1) {
-            throw "No verified MSVC x64 PE/PDB pairs were collected"
+          if ($summary.status -ne "matched" -or [int]$summary.unique_binary_count -lt [int]$env:EXPECTED_CORPUS_TARGET_COUNT) {
+            throw "Expected $env:EXPECTED_CORPUS_TARGET_COUNT verified MSVC x64 PE/PDB pairs"
           }
