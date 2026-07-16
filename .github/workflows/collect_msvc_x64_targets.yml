@@ -164,7 +164,7 @@ jobs:
               $archive = Join-Path $env:RUNNER_TEMP "$($source.id)-$kind-$asset"
               Invoke-WebRequest -Uri $url -OutFile $archive
               $actual = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
-              if ($actual -ne $expected) { throw "SHA-256 mismatch for $asset: expected $expected, got $actual" }
+              if ($actual -ne $expected) { throw "SHA-256 mismatch for ${asset}: expected $expected, got $actual" }
               & $sevenZip x $archive "-o$sourceRoot" -y | Out-Host
               if ($LASTEXITCODE -ne 0) { throw "7-Zip failed for $asset" }
               if ($kind -eq "pe") {
