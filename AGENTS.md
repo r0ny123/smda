@@ -67,6 +67,8 @@ If the venv is missing or stale, bootstrap it with:
 make init   # upgrades pip/setuptools/wheel, installs -e ".[dev]", installs pre-commit
 ```
 
+Cloud Agents run `.cursor/scripts/cloud-agent-install.sh` (idempotent venv + editable install). That script skips pre-commit hook installation because Cloud Agent VMs set `core.hooksPath`. After install, activate `.venv` and use the Makefile targets below.
+
 `make init` installs the `dev` extra (pytest, ruff, pre-commit, build, twine, tqdm). For CPU/memory profiling tooling, install `.[dev,profile]` instead.
 
 ## Commands
