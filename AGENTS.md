@@ -163,6 +163,12 @@ Constraints an agent must respect to avoid breaking SMDA or its downstream consu
 ### Version strings stay in sync — and are load-bearing
 - `SmdaConfig.VERSION` and `smda.__version__` must match (see Versioning). The value is written into every `SmdaReport` (`disassembly.smda_version`) and feeds IDA-compatibility decisions, so an inconsistent or careless bump has downstream effects.
 
+### Escaper output changes must move the compatibility markers
+- Downstream consumers persist data derived from the escaper (MCRIT stores `pic_hash` values and minhash signatures built from the escaped representation) and decide what to repair by comparing the version a report was analyzed with against the markers SMDA publishes. A marker left behind makes stale derived data indistinguishable from current data — it is not a cosmetic omission.
+- **`SmdaConfig.ESCAPER_DOWNWARD_COMPATIBILITY`** is the marker for escaper output as a whole: bump it to the release carrying the change whenever a mnemonic group, an escaped operand, or an escaped byte sequence changes for any architecture — including a "correctness fix", which is exactly the case downstream cannot detect on its own. It only ever moves forward, and its value is a release, so it must be `<=` `SmdaConfig.VERSION`.
+- **`*_PIC_HASH_ESCAPE_VERSION`** in `smda.common.SmdaFunction` (one per architecture) additionally gates `pic_hash` recalculation on report import. Move the matching one when `escapeBinary` output changes for that architecture; `ESCAPER_DOWNWARD_COMPATIBILITY` moves too, since `escapeBinary` is escaper output.
+- `tests/testEscaperFingerprint.py` hashes the escaper output over the frozen corpus in `tests/escaper_fingerprint_corpus.json` and fails when any channel drifts. When the drift is intended, bump the marker the failure names, then update the digest in the same commit — never update the digest alone.
+
 ### CFG model is strict (IDA-style)
 - A function may contain only instructions belonging to that function, and instructions may not overlap. Do not relax this model — recovery passes and downstream tooling depend on it.
 

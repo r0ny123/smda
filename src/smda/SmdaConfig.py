@@ -5,7 +5,16 @@ import os
 class SmdaConfig:
     # keep this in sync with smda.__version__
     VERSION = "4.4.7"
-    ESCAPER_DOWNWARD_COMPATIBILITY = "1.13.16"
+    # The oldest release whose escaper output still matches the current one. Consumers that
+    # persist escaper-derived data (MCRIT stores pic_hashes and minhash signatures) compare the
+    # version a report was analyzed with against this marker and repair everything below it, so
+    # it has to move to the release that carries the change whenever escaper output changes -
+    # any change to a mnemonic group, an escaped operand, or an escaped byte sequence. Left
+    # behind, it makes stale derived data indistinguishable from current data.
+    # Last moved for 4.4.5, where segment-qualified memory operands stopped escaping as CONST,
+    # AVX-512 registers started escaping as XREG, and six mnemonics changed group.
+    # tests/testEscaperFingerprint.py fingerprints the escaper output and fails when it drifts.
+    ESCAPER_DOWNWARD_COMPATIBILITY = "4.4.5"
     CONFIG_FILE_PATH = str(os.path.abspath(__file__))
     PROJECT_ROOT = str(os.path.abspath(os.sep.join([CONFIG_FILE_PATH, "..", "..", ".."])))
 
