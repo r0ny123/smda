@@ -1,0 +1,9 @@
+{
+  "name": "SMDA",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "user": "ubuntu",
+  "install": "./.cursor/scripts/cloud-agent-install.sh"
+}
