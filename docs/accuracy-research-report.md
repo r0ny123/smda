@@ -369,6 +369,13 @@ the lowest precision measured here to 78.951, and the C/C++ corpus barely moves 
 by the same clang — the pattern needs two prologues back to back, which Rust's code generation
 produces far more often than C or C++ does.
 
+**It also repairs control-flow graphs, which this metric cannot see.** A spurious candidate seeded
+four bytes inside a function does not only add a false positive: the real function stops at it and is
+reported as a single block. On two Rust cells, base against PR: 123 addresses dropped and **none of
+them declared**, 0 gained, **119 functions grew and every one of them from a single block** — the
+largest going 1 → 327 — and **nothing shrank**. A function truncated to its first block still has the
+right start, so the start-based metric scores it as a hit either way.
+
 ## 10. Fix landed: after a call, the cut recovers the function, not a seed
 
 **The defect.** The AArch64 backend seeds tailcall candidates from two sites of its own, and neither

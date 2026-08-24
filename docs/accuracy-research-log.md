@@ -1526,3 +1526,39 @@ for itself in the analysis it skips.
 The identical function count on `rust_pe_gnu` is also the expected result rather than a surprise: it
 is a mingw PE, and the counterfactual said the interior-prologue rule is inert on all eight mingw PE
 cells of the built corpus.
+
+---
+
+## 2026-08-24 — what the interior-prologue rule does to the control-flow graph
+
+The repository's own benchmark gate compares base and PR function-address sets over a 155-file
+corpus and fails on any difference, which an accuracy change necessarily produces. Its report on this
+branch is worth reading closely, because the shape of the difference is the argument:
+
+- `elf.akira...unpacked`: 48 addresses gone, none gained, and **59 functions whose block count
+  changed** — the ones it lists all read `base 1 → PR N`, with N from 5 to 154.
+
+That is the fix, seen from the other side. A spurious candidate seeded four bytes inside a function
+does not only add a false positive: it **truncates the real function**, which stops at the candidate
+and is reported as a single block. Removing the candidate lets the real function decode.
+
+Reproduced on a corpus that has ground truth, two Rust cells, base against PR:
+
+| | release | debug |
+|---|---|---|
+| addresses dropped | 123 | 123 |
+| **of those, declared functions** | **0** | **0** |
+| addresses gained | 0 | 0 |
+| functions that grew | 119 | 119 |
+| **of those, grew from a single block** | **119** | **119** |
+| functions that shrank | **0** | **0** |
+| largest single-block recoveries | 1 → 327, 237, 227, 221, 202 | same |
+
+Every dropped address is undeclared, every declared function is kept, nothing shrinks, and 119
+functions per binary go from being reported as one block to being reported as up to 327. The
+function-start metric this whole project measures cannot see that: it scores starts, and a function
+truncated to its first block still has the right start. The gate's block-count drift, which it prints
+as informational, is measuring something the accuracy tables miss.
+
+So the branch's headline for this fix — 912 false positives removed, 0 true positives lost — understates
+it. On these two cells it also repairs 119 control-flow graphs each.

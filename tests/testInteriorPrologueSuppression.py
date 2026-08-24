@@ -87,6 +87,26 @@ class InteriorPrologueSuppressionTest(unittest.TestCase):
         self.assertIn(follower, seeded)
         self.assertNotIn(BASE_ADDR + len(PAD), seeded)
 
+    def testAnAddressSomethingCallsSurvivesTheRule(self):
+        """A call target is already a candidate before the prologue scan runs.
+
+        The rule declines to *add* a prologue candidate; it never removes one. Reference
+        discovery runs three passes earlier, so an entry the image calls directly keeps
+        its candidacy even when the bytes in front of it are another seeded prologue.
+        """
+        opened = FRAME_PROLOGUE + CALLEE_SAVED + BODY
+        entry = BASE_ADDR + len(PAD)
+        interior = entry + len(FRAME_PROLOGUE)
+        # control: with nothing calling it, the interior match is refused
+        self.assertNotIn(interior, seededStarts(PAD + opened + PAD))
+
+        # e8 rel32 to the interior address, placed after the function so the call site
+        # is not itself inside the bytes under test
+        call_site = BASE_ADDR + len(PAD) + len(opened)
+        displacement = interior - (call_site + 5)
+        call = b"\xe8" + displacement.to_bytes(4, "little", signed=True)
+        self.assertIn(interior, seededStarts(PAD + opened + call + BODY + PAD))
+
     def testTheHotpatchPadIsStillTheEntryItAlwaysWas(self):
         # control for the neighbouring rule: `mov edi, edi` pads the entry and the bare
         # prologue two bytes in is the body, which is decided by a different test than this one
