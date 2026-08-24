@@ -55,12 +55,17 @@ class MachoFunctionStartFixtureTestSuite(unittest.TestCase):
         on = _report(buffer, True)
         self.assertEqual(off.status, "ok")
         self.assertEqual(on.status, "ok")
-        self.assertEqual(off.num_functions, 246)
+        # the primary pass recovers 15 more than it used to: this image ends two functions
+        # in a call that does not return, and the boundary rule now cuts there instead of
+        # decoding on into the next fifteen entries. What the table pass adds on top is
+        # unchanged, and so is the total with it on -- the primary pass now discovers by
+        # itself part of what the table was compensating for
+        self.assertEqual(off.num_functions, 261)
         self.assertEqual(on.num_functions, 275)
         table = _table_addresses(buffer)
         off_starts = {function.offset for function in off.getFunctions()}
         on_starts = {function.offset for function in on.getFunctions()}
-        self.assertEqual(len(table & off_starts), 117)
+        self.assertEqual(len(table & off_starts), 132)
         self.assertEqual(len(table & on_starts), 146)
         # a candidate source may only add starts, never drop one the primary pass found
         self.assertEqual(off_starts - on_starts, set())

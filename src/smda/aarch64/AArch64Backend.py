@@ -22,6 +22,7 @@ from .definitions import (
     COND_BRANCH_PREFIXES,
     END_INS,
     EXCEPTION_RETURN_INS,
+    FRAME_RECORD_WINDOW,
     INDIRECT_JUMP_INS,
     INSTRUCTION_SIZE,
     LDR_UNSIGNED_64_MASK,
@@ -33,6 +34,7 @@ from .definitions import (
     is_bti_landing_pad,
     is_exception_record_entry,
     is_function_prologue,
+    opens_stack_frame,
     rd_field,
     rn_field,
 )
@@ -152,6 +154,11 @@ class AArch64Backend(ArchBackend):
         return is_function_prologue(word)
 
     @classmethod
+    def _opensStackFrameAt(cls, d, addr):
+        words = [cls._wordAt(d, addr + INSTRUCTION_SIZE * step) for step in range(1 + FRAME_RECORD_WINDOW)]
+        return opens_stack_frame(words)
+
+    @classmethod
     def _callFallthroughFunctionStart(cls, d, addr):
         if addr in d.fc_manager.getFunctionStartCandidates():
             return addr
@@ -176,6 +183,12 @@ class AArch64Backend(ArchBackend):
                 is_function_prologue(word) or is_bti_landing_pad(word)
             ):
                 return None
+            return cursor
+        # A callee that does not return leaves its caller without a `ret`, so decoding
+        # runs straight into whatever follows -- with no padding to notice and nothing
+        # having made the next entry a candidate, the cases above all decline and the
+        # two functions merge. A frame opening right here says the merge is wrong.
+        if cls._opensStackFrameAt(d, cursor):
             return cursor
         return None
 
