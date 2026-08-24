@@ -25,7 +25,8 @@ from typing import Dict, List, Optional, Tuple
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bench.corpora import CORPORA, Sample, filterSamples
+from bench.corpora import CORPORA, Sample, filterSamples, knownTruthDefect
+from bench.integrity import checkCorpus
 from bench.metrics import SampleScore, aggregate, scoreSample
 from bench.report import renderRow, renderTable, writeResults
 from smda.SmdaConfig import SmdaConfig
@@ -60,7 +61,8 @@ def _initWorker(kind: str, options: Dict[str, object]) -> None:
 
 
 def _runOne(sample: Sample) -> Tuple[str, List[int], Dict]:
-    starts, info = _WORKER_ENGINE.run(sample.path, sample.base_addr, sample.bitness)
+    bitness = None if _WORKER_OPTIONS.get("bitness") == "auto" else sample.bitness
+    starts, info = _WORKER_ENGINE.run(sample.path, sample.base_addr, bitness)
     return sample.name, sorted(starts), info
 
 
@@ -117,6 +119,20 @@ def parseArgs(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "with anything measured at stock settings",
     )
     parser.add_argument("--ghidra-dir", default=os.environ.get("GHIDRA_INSTALL_DIR", ""))
+    parser.add_argument(
+        "--bitness",
+        default="corpus",
+        choices=["corpus", "auto"],
+        help="'corpus' hands the engine the bitness the corpus declares, which is what the "
+        "published comparisons did; 'auto' withholds it, which is what a caller analysing an "
+        "unknown dump actually gets",
+    )
+    parser.add_argument(
+        "--exclude-known-defects",
+        action="store_true",
+        help="drop samples whose ground truth is recorded as describing a different build; off by "
+        "default because every published figure for these corpora includes them",
+    )
     parser.add_argument("--limit", type=int, default=0, help="analyse at most this many samples per corpus")
     parser.add_argument(
         "--max-failures",
@@ -135,7 +151,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if unknown:
         print(f"unknown corpus keys: {unknown}", file=sys.stderr)
         return 2
-    options = {"timeout": args.timeout, "ghidra_dir": args.ghidra_dir}
+    options = {"timeout": args.timeout, "ghidra_dir": args.ghidra_dir, "bitness": args.bitness}
 
     rows: List[str] = []
     all_failures: List[str] = []
@@ -148,6 +164,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[!] skipping {corpus_key}: {missing}", file=sys.stderr)
             continue
         samples = filterSamples(samples, args.filter)
+        findings, integrity = checkCorpus(samples)
+        print(
+            f"[integrity] {corpus_key}: {integrity['checked']} of {integrity['total']} samples have a "
+            f"section table to check against, {len(findings)} hold truth outside every executable section"
+            + ("".join(f"\n             {f.name}: {f.outside}/{f.truth} ({f.share:.1f}%)" for f in findings)),
+            file=sys.stderr,
+        )
+        if args.exclude_known_defects:
+            excluded = [sample.name for sample in samples if knownTruthDefect(sample.name)]
+            samples = [sample for sample in samples if not knownTruthDefect(sample.name)]
+            for name in excluded:
+                print(f"[integrity] excluding {name}: {knownTruthDefect(name)}", file=sys.stderr)
         if args.limit:
             samples = samples[: args.limit]
         if not samples:
@@ -159,6 +187,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "truth_source": corpus.truth_source,
             "n": len(samples),
             "filter": args.filter,
+            "bitness_source": args.bitness,
             "truth_functions": sum(len(sample.truth) for sample in samples),
         }
         for engine_name in engines:
@@ -168,8 +197,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             rows.append(renderRow(corpus.title, engine_name, args.filter, aggregated, args.mean))
             summary[f"{engine_name}:{corpus_key}:{args.filter}"] = aggregated.toDict()
             if args.out:
+                suffix = args.filter if args.bitness == "corpus" else f"{args.filter}-autobitness"
                 path = writeResults(
-                    args.out, corpus_key, engine_name, args.filter, engine_info, corpus_info, scores, aggregated
+                    args.out, corpus_key, engine_name, suffix, engine_info, corpus_info, scores, aggregated
                 )
                 print(f"[+] wrote {path}", file=sys.stderr)
 

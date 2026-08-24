@@ -12,15 +12,17 @@ if TOOLS_PATH not in sys.path:
     sys.path.insert(0, TOOLS_PATH)
 
 from bench.corpora import (  # noqa: E402
+    KNOWN_TRUTH_DEFECTS,
     PAPER_OPT_LEVELS,
+    Sample,  # noqa: E402
     bitnessFromName,
     filterSamples,
+    knownTruthDefect,
     loadByteweightTruth,
     loadFnmapTruth,
     parseBaseAddrFromName,
     parseOptLevel,
 )
-from bench.corpora import Sample  # noqa: E402
 from bench.metrics import aggregate, scoreSample  # noqa: E402
 from bench.report import renderRow, renderTable, writeResults  # noqa: E402
 
@@ -149,6 +151,30 @@ class BenchCorporaTest(unittest.TestCase):
     def testUnknownFilterIsRejected(self):
         with self.assertRaises(ValueError):
             filterSamples([], "whatever")
+
+
+class BenchIntegrityTest(unittest.TestCase):
+    def testAKnownDefectMatchesItsDumpedVariantToo(self):
+        stem = "msvs_whatever_32_Od_SfxSetup"
+        self.assertIn(stem, KNOWN_TRUTH_DEFECTS)
+        self.assertIsNotNone(knownTruthDefect(stem))
+        self.assertIsNotNone(knownTruthDefect(stem + "_dump7_0x00400000"))
+
+    def testAnUnaffectedSampleIsNotMatched(self):
+        self.assertIsNone(knownTruthDefect("msvs_whatever_32_O1_SfxSetup"))
+        self.assertIsNone(knownTruthDefect("cerber_abcdef_dump_0x400000"))
+
+    def testEveryRecordedDefectStatesItsEvidence(self):
+        for stem, reason in KNOWN_TRUTH_DEFECTS.items():
+            self.assertTrue(reason.strip(), f"{stem} is excluded with no reason recorded")
+            self.assertIn("0x", reason, f"{stem} is excluded without naming an address")
+
+    def testRangesAreShiftedOntoTheAddressSpaceADumpWasLoadedAt(self):
+        from bench.integrity import IntegrityFinding
+
+        finding = IntegrityFinding(name="s", truth=100, outside=25, ranges=[(0x1000, 0x2000)])
+        self.assertEqual(finding.share, 25.0)
+        self.assertEqual(IntegrityFinding(name="s", truth=0, outside=0, ranges=[]).share, 0.0)
 
 
 class BenchReportTest(unittest.TestCase):

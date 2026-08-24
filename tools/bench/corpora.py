@@ -286,6 +286,26 @@ CORPORA: Dict[str, Corpus] = {
 #: default keeps every build, so a row is only comparable when it names its filter
 PAPER_OPT_LEVELS = {"O1", "O2"}
 
+#: Ground-truth files established to describe a different build from the binary they
+#: are paired with, keyed by the name stem so a dumped variant of the same program is
+#: covered too. Excluded only when asked for, because every published figure for these
+#: corpora includes them and a silently smaller population is not comparable.
+KNOWN_TRUTH_DEFECTS: Dict[str, str] = {
+    "msvs_whatever_32_Od_SfxSetup": (
+        "truth spans 0x401000-0x414d86 while the binary's only executable section ends at "
+        "0x411000; 181 of its 472 starts fall outside it, it shares 4 addresses with the O1 "
+        "build's truth despite having the same 472 entries, and every sibling build matches "
+        "its own truth to the address"
+    ),
+}
+
+
+def knownTruthDefect(name: str) -> Optional[str]:
+    for stem, reason in KNOWN_TRUTH_DEFECTS.items():
+        if name.startswith(stem):
+            return reason
+    return None
+
 
 def filterSamples(samples: List[Sample], opt_filter: str) -> List[Sample]:
     if opt_filter == "all":
