@@ -190,13 +190,17 @@ def is_trap(word):
 STP_FP_LR_PREINDEX_MASK = 0xFFC07FFF
 STP_FP_LR_PREINDEX_VALUE = 0xA9807BFD
 # stp <Xt>, <Xt2>, [sp, #imm]!  — pre-index, 64-bit GPR pair (opcode bits 31:22)
+STP_PREINDEX_MASK = 0xFFC00000
+STP_PREINDEX_VALUE = 0xA9800000
+STP_IMM7_NEGATIVE = 0x00200000  # imm7 sign bit (instr bit 21): stack-allocating
+
 #: `sub sp, sp, #imm` with no shift -- a stack allocation, on its own as common
 #: mid-function as at an entry, so never a prologue signal by itself
 SUB_SP_IMM_MASK = 0xFFC003FF
 SUB_SP_IMM_VALUE = 0xD10003FF
 
 #: `stp x29, x30, [sp, #imm]` in signed-offset form: the frame record written into
-#: a frame the previous instruction already allocated. The pre-indexed form below
+#: a frame the previous instruction already allocated. The pre-indexed form above
 #: allocates and stores at once and is a prologue signal on its own.
 STP_FP_LR_OFFSET_MASK = 0xFFC07FFF
 STP_FP_LR_OFFSET_VALUE = 0xA9007BFD
@@ -205,9 +209,6 @@ STP_FP_LR_OFFSET_VALUE = 0xA9007BFD
 #: stops reading as one prologue
 FRAME_RECORD_WINDOW = 3
 
-STP_PREINDEX_MASK = 0xFFC00000
-STP_PREINDEX_VALUE = 0xA9800000
-STP_IMM7_NEGATIVE = 0x00200000  # imm7 sign bit (instr bit 21): stack-allocating
 # str <Xt>, [sp, #imm]!  — pre-index, 64-bit store (pre-index marker in bits 11:10)
 STR_PREINDEX_MASK = 0xFFE00C00
 STR_PREINDEX_VALUE = 0xF8000C00
