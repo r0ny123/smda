@@ -1003,10 +1003,11 @@ aggregates them.
 | ByteWeight* msvc10-32 | – | 56 | 0.775 / 0.953 | 0.777 / 0.953 | 0.967 / 0.910 | 0.975 / 0.912 |
 | ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
 
+| Malpedia57 | – | 57 | 0.819 / 0.940 | 0.849 / 0.961 | 0.976 / 0.935 | 0.986 / 0.926 |
+
 TPR / PPV. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the analysis
-budget; it is marked and named rather than printed, for the reasons recorded above. The seventh row,
-the malware corpus, is still running under Ghidra and prints `not measured` rather than a blank until
-it lands.
+budget; it is marked and named rather than printed, for the reasons recorded above. Every other cell
+is measured, and the tool's control line reports `missing=[]`.
 
 **This is the harness validating itself against a second engine.** Ghidra 12.1.3 lands within 0.002
 to 0.013 of the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different
@@ -1015,7 +1016,8 @@ earlier validation showed SMDA 4.4.1 reproducing a recorded SMDA measurement; th
 is not tuned to one engine's output shape.
 
 It also says something about the two tools. Ghidra has moved very little on these corpora in five
-years — the largest change on a comparable cell is +0.013 recall. SMDA has moved a great deal, and
+years — at most +0.013 recall on a ByteWeight cell, and +0.030 on the malware corpus, which is its
+one real improvement and still leaves it at 0.849 against SMDA's 0.986. SMDA has moved a great deal, and
 almost all of it on the hardest row: **the dumped 64-bit set goes from 0.932 recall to 0.998**, +6.6
 points, where the unpacked sets were already near their ceiling.
 
@@ -1345,9 +1347,32 @@ not worthless: seven functions on two binaries are reached only through it. Micr
 rises, 91.246 to 91.428, because the twelve gimmick recovers outweigh the seven lost; the macro mean
 is what the reject criterion reads, and it falls. **Rejected as a blunt gate.**
 
-What the numbers argue for is the narrower rule the other two fixes took: keep the source and refuse
-the cases that are provably interior, rather than switching the source off. The seven true positives
-are the thing to characterise next, and this measurement is what says they exist.
+### The same gate on Go
+
+| corpus | n | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|---|
+| as shipped | 45 | 94.843 | 99.618 | 97.118 | 162,145 | 9,623 |
+| seeding gated | 45 | **95.216** | 99.618 | **97.323** | 162,145 | **8,983** |
+
+**640 false positives removed and not one true positive lost**, with recall identical to the digit.
+Split by architecture, the isolation is complete:
+
+| architecture | FP before | FP after | ΔFP | ΔTP |
+|---|---|---|---|---|
+| 386 | 747 | 747 | 0 | 0 |
+| amd64 | 3,065 | 3,065 | 0 | 0 |
+| **arm64** | 5,811 | **5,171** | **−640** | **0** |
+
+The intel cells are bit-identical, which is the control that the change reaches only what it was
+meant to. The ceiling recorded earlier for this item — "roughly 2,907 across the six arm64 cells" —
+was an over-estimate taken from the count of tailcall-sourced candidates rather than from the
+functions they actually produce. The real figure is 640 on Go and 33 on the Mach-O corpus.
+
+So the trade is **673 false positives against 7 true positives**, and the seven are the whole reason
+this is not simply landed. Separating the two sites, below, splits that trade cleanly: 458 of the 673
+come from the site that costs nothing, and 215 from the site that costs the seven. What the numbers argue for is the narrower rule the other two fixes took:
+keep the source and refuse the cases that are provably interior, rather than switching the source
+off. Characterising those seven is the next step, and this measurement is what says they exist.
 
 ---
 
@@ -1370,3 +1395,89 @@ The same figures the report prints, from a tree that has never been worked in, w
 recorded for the fixture that declares no function starts. The corpus that needs no toolchain and no
 download is the one this can be shown on end to end; the others need their compilers, and their
 recipes are the same code path.
+
+---
+
+## 2026-08-24 — the two AArch64 tailcall sites are not the same thing
+
+Gating both sites together lost recall, and that reads as "the source is worth keeping". Gating them
+separately says something quite different. ARM64 Mach-O corpus, n=11, filter `all`, arithmetic macro
+mean:
+
+| configuration | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| as shipped | 94.008 | 96.345 | 94.778 | 2,512 | 263 | 241 |
+| branch-target site gated | 94.461 | **96.214** | 95.039 | 2,505 | 258 | 248 |
+| **`bl` fall-through site gated** | **94.217** | **96.446** | **94.936** | **2,524** | **235** | **229** |
+| both gated | 94.684 | 96.314 | 95.203 | 2,517 | 230 | 236 |
+
+The two sites do opposite things.
+
+**The branch-target site earns its keep.** It seeds the target of a backward branch or a short
+no-frame stub, and gating it costs 7 true positives — those are the seven the combined measurement
+found, and they all come from here.
+
+**The `bl` fall-through site is strictly worse than not having it.** Gating it improves *every*
+metric: 12 more functions recovered, 28 fewer false positives, recall up 0.101 and precision up
+0.209. Removing a candidate source and gaining true positives is the surprising part, and the reason
+is that the seeding is not what finds the function. The same code path cuts the caller at the
+boundary — `_cutFunctionBeforeInstruction` runs whether or not the candidate is seeded — and once the
+caller ends there, the ordinary candidate machinery finds the next entry with better extents than a
+tailcall-flagged candidate does.
+
+Gating both hid this: the branch-target site's 7 losses and the fall-through site's 12 gains partly
+cancel, leaving a net that looked like a small recall drop and read as "reject the whole idea".
+
+### The same site on Go
+
+| corpus | n | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|---|
+| as shipped | 45 | 94.843 | 99.618 | 97.118 | 162,145 | 9,623 |
+| `bl` fall-through site gated | 45 | **95.111** | 99.618 | **97.266** | 162,145 | **9,193** |
+
+430 false positives removed, recall identical to the digit, no true positive lost.
+
+**Both AArch64 corpora improve on every metric**, which is what separates this from the three
+proposals rejected above:
+
+| corpus | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|
+| ARM64 Mach-O, n=11 | +0.209 | **+0.101** | +0.158 | **+12** | **−28** |
+| Built Go, n=45 | +0.268 | +0.000 | +0.148 | 0 | **−430** |
+
+Landed as the narrow change: the `bl` fall-through site consults `RESOLVE_TAILCALLS` like the shared
+engine does, and the branch-target site is deliberately left alone with the seven functions it
+recovers as the stated reason.
+
+---
+
+## 2026-08-24 — Ghidra on the Go corpus
+
+The Ghidra sweep reached the built Go family, which no published comparison covers. Filter `all`,
+Ghidra 12.1.3 under the same analysis budget both engines get:
+
+| engine | n | PPV | TPR | F1 | micro PPV | micro TPR |
+|---|---|---|---|---|---|---|
+| ghidra-12.1.3 | 45 | 93.501 | **86.430** | 88.537 | 98.204 | **78.313** |
+| smda-4.4.7 | 45 | 94.843 | **99.618** | 97.118 | — | — |
+
+Two samples — `netjson_darwin-arm64_default` and `netjson_linux-arm64_default` — did not finish
+inside the budget and score 0, which the macro figures carry; the micro figures are dominated by the
+43 that did.
+
+By architecture, micro:
+
+| architecture | Ghidra PPV | Ghidra TPR |
+|---|---|---|
+| 386 | 98.38 | **70.22** |
+| amd64 | 98.77 | 91.76 |
+| arm64 | 96.60 | **62.89** |
+
+Ghidra is more precise than SMDA on this family and recovers far fewer functions — 78.3% against
+99.6%, and 62.9% on arm64. That is the pclntab: SMDA reads Go's own function table, and a Go binary
+without one recovered is mostly unreachable code as far as recursive traversal is concerned. It is
+the clearest illustration in this work of the design trade the origin evaluation states — deliberate
+over-detection buying completeness — measured on a family that evaluation never covered.
+
+Recorded with the budget caveat attached: this is Ghidra under the timeout this harness gives both
+engines, and two of its 45 samples exceeded it.

@@ -63,7 +63,7 @@ data. Three of its conclusions are load-bearing for everything below:
 
 ## 3. The replication, and what it validates
 
-Six of the origin evaluation's seven rows now carry a measured Ghidra column beside the recorded one,
+All seven of the origin evaluation's rows now carry a measured Ghidra column beside the recorded one,
 aggregated the way that evaluation aggregates them — geometric mean per optimization level for rows
 whose binaries carry an `O0`-`O3` label, arithmetic mean for the rest. TPR / PPV:
 
@@ -75,28 +75,28 @@ whose binaries carry an `O0`-`O3` label, arithmetic mean for the rest. TPR / PPV
 | ByteWeight msvc10-64 | O2 | 17 | 0.703 / 0.999 | 0.809 / 0.999 | 0.972 / 0.981 | 0.998 / 0.993 |
 | ByteWeight* msvc10-32 | – | 56 | 0.775 / 0.953 | 0.777 / 0.953 | 0.967 / 0.910 | 0.975 / 0.912 |
 | ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
+| Malpedia57 | – | 57 | 0.819 / 0.940 | 0.849 / 0.961 | 0.976 / 0.935 | 0.986 / 0.926 |
 
 The IDA and nucleus columns are in the tool's own output and omitted here; they are the origin
 evaluation's figures, labelled `(paper)` in the table itself because no licence is available to
 re-run them. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the
-analysis budget, and is marked and named rather than printed. The seventh row of the origin table —
-the malware corpus — is not listed above because its Ghidra column is still being measured; the tool
-prints `not measured` there rather than a blank, so a missing engine cannot be read as a bad score.
+analysis budget, and is marked and named rather than printed.
 
 **This validates the harness against a second engine.** Ghidra 12.1.3 lands within 0.002 to 0.013 of
-the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different tool, a
+the figures recorded for Ghidra 9.1.2 on four of the six comparable cells — a different tool, a
 different decade, the same metric implementation reproducing published numbers. The earlier check
 showed SMDA 4.4.1 reproducing a recorded SMDA measurement; this one shows the metric is not tuned to
 one engine's output shape.
 
 It also says something about the two tools. Ghidra has moved very little on these corpora in five
-years; the largest change on a comparable cell is +0.013 recall. SMDA has moved a great deal, and
-almost all of it on the hardest row — **the dumped 64-bit set goes from 0.932 recall to 0.998**,
-where the unpacked sets were already near their ceiling.
+years: +0.013 recall at most on a ByteWeight cell, and +0.030 on the malware corpus, its one real
+improvement. SMDA has moved a great deal, and almost all of it on the hardest row — **the dumped
+64-bit set goes from 0.932 recall to 0.998**, where the unpacked sets were already near their
+ceiling. On that row the gap between the two tools is now 0.663 against 0.998.
 
 ## 4. Where today's SMDA stands
 
-This is the **baseline** these corpora were at before any change on this branch — section 15 has the
+This is the **baseline** these corpora were at before any change on this branch — section 16 has the
 end state. Filter `all`, arithmetic macro mean, commit `802e627` (SMDA 4.4.7), against SMDA 4.4.1
 measured through the same harness:
 
@@ -215,9 +215,9 @@ inside the binary and a real function there is as reference-less as a spurious p
 point louder: 653 real functions with no internal caller and no false positives to trade for them.
 
 Two rejected repairs on the same finding, from opposite directions, both because the discriminator
-was assumed rather than measured. Section 11 records where it has to come from instead.
+was assumed rather than measured. Section 12 records where it has to come from instead.
 
-### Gating the AArch64 tailcall seeding
+### Gating both AArch64 tailcall sites together
 
 The AArch64 backend seeds tailcall candidates from two sites of its own and neither consults
 `SmdaConfig.RESOLVE_TAILCALLS`, which is `False` by default and which the shared engine honours on
@@ -228,12 +228,18 @@ consistency repair.
 Measured on the ARM64 Mach-O corpus with the boundary rule's cut kept and only the seeding gated:
 PPV 94.008 → 94.684, F1 94.778 → 95.203, and macro **TPR 96.345 → 96.314**. A recall drop on any
 corpus is the reject criterion, so this is a **reject** — and the per-sample view says why it should
-be: the source costs 34 false positives and earns 7 true positives, and those seven functions on two
-binaries are reached by nothing else.
+be: the two sites together cost 33 false positives and earn 7 true positives, and those seven
+functions on two binaries are reached by nothing else.
 
-What that argues for is the narrower shape the two landed fixes took — keep the source, refuse the
-cases that are provably interior — rather than switching it off. Section 11 carries it as an open
-item with the seven true positives named as the thing to characterise.
+On the Go corpus the same gate removes **640 false positives and loses none**, recall identical to
+the digit, and the 386 and amd64 cells are bit-identical while every one of the 640 comes from an
+arm64 cell. So the trade across both corpora is 673 false positives against 7 true positives.
+
+Gating both together is what made this look like one decision. Separating the two sites — section 10
+— shows they do opposite things: the `bl` fall-through site is strictly worse than not having it and
+is now gated, and the branch-target site earns all 7 of those true positives and is left alone. The
+net that reads as a small recall drop is those 7 losses and 12 gains partly cancelling. Section 12
+carries the branch-target site as the open item it still is.
 
 ### Not worth changing: the `endbr64`-then-prologue interior seed
 
@@ -249,7 +255,7 @@ Left alone.
 
 The first attempt to measure this returned a clean zero on six binaries, five of which contained
 none of the pattern — a zero with no positive control beside it, behind a perfect byte statistic that
-made it look like confirmation. Section 14 has the habit that caught it.
+made it look like confirmation. Section 15 has the habit that caught it.
 
 ## 7. Fix landed: the exception table's address is declared, not conventional
 
@@ -363,7 +369,33 @@ the lowest precision measured here to 78.951, and the C/C++ corpus barely moves 
 by the same clang — the pattern needs two prologues back to back, which Rust's code generation
 produces far more often than C or C++ does.
 
-## 10. What the harness itself contributes
+## 10. Fix landed: after a call, the cut recovers the function, not a seed
+
+**The defect.** The AArch64 backend seeds tailcall candidates from two sites of its own, and neither
+consults `SmdaConfig.RESOLVE_TAILCALLS` — `False` by default, and honoured by the shared engine on
+both of its own tailcall paths. Gating both together loses recall, which reads as "the source is
+worth keeping". Gating them separately shows they do opposite things.
+
+**The `bl` fall-through site is strictly worse than not having it.** The same code path already cuts
+the caller at the boundary, and that cut is what recovers the next function: once the caller ends
+there, the ordinary candidate machinery reaches the entry with better extents than a tailcall-flagged
+candidate does. Seeding one as well costs precision *and* recall.
+
+| corpus | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|
+| ARM64 Mach-O, n=11 | +0.209 | **+0.101** | +0.158 | **+12** | **−28** |
+| Built Go, n=45 | +0.268 | +0.000 | +0.148 | 0 | **−430** |
+
+Every one of the 430 comes from an arm64 cell; Go's 386 and amd64 cells are bit-identical, which is
+the control that the change reaches only what it was meant to.
+
+**The branch-target site is deliberately left alone.** Gating it costs 7 true positives on the Mach-O
+corpus — functions on two binaries nothing else reaches — and a recall drop on any corpus is the
+reject criterion. Gating both hid this: those 7 losses and these 12 gains partly cancel into a small
+net recall drop that reads as a reason to reject the whole idea. Section 6 records that rejection and
+section 12 carries the branch-target site as an open item.
+
+## 11. What the harness itself contributes
 
 Three properties were added because a measurement without them has already misled this project:
 
@@ -386,7 +418,7 @@ Three properties were added because a measurement without them has already misle
 if recall fell on any config, so the reject criterion is enforced by the tool rather than by
 remembering to look.
 
-## 11. Ranked remaining agenda, with ceilings
+## 12. Ranked remaining agenda, with ceilings
 
 Each item names what it would be worth and on which corpus, so nothing here is ranked on
 plausibility alone. The first two have a mechanism established and a candidate change measured
@@ -455,31 +487,24 @@ is the same and the byte pattern is not.
 says one mechanism accounts for the rest — the next step is to histogram the remaining interior
 splits by candidate source the way the `41 57` seed was found, not to guess a second pattern.
 
-### 4. Go/AArch64: a tailcall path the shared engine gates and this backend does not
+### 4. Go/AArch64: what is left of the tailcall path after section 10
 
-Go arm64 produces **0.1340 false positives per truth function** against 0.0367 on amd64 and 0.0173
-on 386 — a 3.6× rate on the same source programs. **170 of 246** false positives on
-`hello_linux-arm64_default` are tailcall candidates, a source that contributes 0 on every intel
-cell, and their first instructions are `sub`, `adrp`, `ldr`: mid-function shapes.
+Go arm64 produced **0.1340 false positives per truth function** against 0.0367 on amd64 and 0.0173 on
+386 — a 3.6× rate on the same source programs — and **170 of 246** false positives on
+`hello_linux-arm64_default` came from tailcall seeding, a source that contributes 0 on every intel
+cell. Section 10 gated the half of that source which was strictly worse than not having it, removing
+430 of them on Go and 28 on the ARM64 Mach-O corpus.
 
-`SmdaConfig.RESOLVE_TAILCALLS` is `False` by default and `RecursiveDisassembler` honours it on both
-of its tailcall paths. The AArch64 backend calls `addTailcallCandidate` from two sites of its own and
-neither consults the flag; the AArch64 candidate manager additionally records a capped call
-reference for the seed, manufacturing the evidence that makes it score highly — something the shared
-implementation never does. Go is exactly the code that makes this expensive: it branches backwards
-within a function constantly and its runtime calls are `bl` followed by more of the same function.
-Switching the source off is not the repair. Section 6 records the measurement: on the ARM64 Mach-O
-corpus, gating it costs 34 false positives and **7 true positives**, macro recall falls by 0.031, and
-a recall drop on any corpus is the reject criterion. The source is net-negative and not worthless —
-seven functions on two binaries are reached by nothing else.
+What remains is the branch-target site: it seeds the target of a backward branch or a short no-frame
+stub, and the AArch64 candidate manager records a capped call reference for the seed, manufacturing
+the evidence that makes it score highly — something the shared implementation never does.
 
-**Ceiling and the next step.** The prize is roughly 2,907 false positives across the six Go arm64
-cells, taking the rate from 0.134 towards 0.045 and PPV there from 85.6 towards about 95; recall on
-Go is untouched either way, because 100.0% of Go true positives on every architecture come from the
-pclntab and no other source contributes one. Reaching it needs the narrower shape both landed fixes
-took — keep the source, refuse the cases that are provably interior — and the seven true positives
-this measurement found are what has to be characterised first. The frozen corpora have no AArch64
-member, so the ARM64 Mach-O corpus and the bundled fixtures are the regression check.
+**Ceiling and the next step.** Gating this site too would remove a further **215** false positives —
+210 on the Go arm64 cells and 5 on the Mach-O corpus — and cost **7 true positives**, functions on
+two binaries that nothing else reaches, so it is rejected as a switch. Reaching the 244 needs the
+narrower shape the landed fixes took — keep the source, refuse the cases that are provably interior —
+and characterising those seven is what comes first. The frozen corpora have no AArch64 member, so the
+ARM64 Mach-O corpus and the bundled fixtures are the regression check.
 
 ### 5. NativeAOT precision — the worst single cell of any family
 
@@ -523,7 +548,7 @@ The mispaired ByteWeight binary is worth **1.374 macro F1 and 1.4 points of reca
 **1.662** on its dumped variant, as pure measurement error. Repairing the truth file rather than
 excluding the binary would recover a real 472-function sample.
 
-## 12. Per-family results
+## 13. Per-family results
 
 Every family below is measured on a corpus built for this work; none of them had ever been measured
 for function-start accuracy. Filter `all`, arithmetic macro mean.
@@ -555,6 +580,14 @@ on 386, 0.0367 on amd64 and **0.1340 on arm64**, on identical source. The AArch6
 over-detects 3.6× more than the intel one and does so on every program and both operating systems.
 99.6% of those extra detections are interior to a real function's span.
 
+Ghidra was run over this family too, which no published comparison covers, under the same analysis
+budget: PPV 93.501 / TPR **86.430** macro, micro recall **78.313** against SMDA's 99.618 — 70.22 on
+386, 91.76 on amd64 and 62.89 on arm64. Two of its 45 samples did not finish inside the budget and
+score 0. Ghidra is the more precise of the two here and recovers far fewer functions, which is the
+pclntab: SMDA reads Go's own function table, and without it most of a Go binary is unreachable to
+recursive traversal. It is the clearest illustration in this work of the trade the origin evaluation
+states — deliberate over-detection buying completeness — on a family that evaluation never covered.
+
 **.NET.** Managed CIL is exact — 100/100/100 on 564 methods in each of three publish modes, because
 metadata enumerates every body. NativeAOT is native code and scores 74.36 precision, the lowest
 figure anywhere here; 702 of its 1,940 false positives are ranges the same image's `.eh_frame`
@@ -575,7 +608,7 @@ off. That option makes SMDA read the same table this corpus uses as ground truth
 on, the corpus scores the engine against the answer key it was handed.
 
 The first measurement of this corpus said PPV 39.901, and it was the corpus rather than the
-disassembler. Section 14 records what was wrong and how it was found; the short version is that
+disassembler. Section 15 records what was wrong and how it was found; the short version is that
 Mach-O stub sections are the counterpart of an ELF PLT and `LC_FUNCTION_STARTS` does not name them.
 
 **Rust.** The lowest precision of any family whose truth is complete even after section 9 took it
@@ -585,7 +618,7 @@ false positives are interior splits, and one byte pattern accounts for half of t
 ones: `push r15; push r14` seeded four bytes inside functions that open with
 `push rbp; mov rbp, rsp`.
 
-## 13. What is not covered, and why
+## 14. What is not covered, and why
 
 - **The Andriesse corpus is absent.** Its SPEC CPU2006 component is licence-restricted, so the
   origin evaluation's `GA` rows cannot be reproduced. The corpora built here stand in for the
@@ -612,7 +645,7 @@ ones: `push r15; push r14` seeded four bytes inside functions that open with
   agenda with no measurement behind it. The bundled Delphi fixtures exercise the symbol providers
   but not function-start accuracy.
 
-## 14. Method notes worth keeping
+## 15. Method notes worth keeping
 
 Three habits earned their place during this work and are worth stating, because each of them
 changed a conclusion:
@@ -660,7 +693,7 @@ calls, not of landing pads. Measured over four cells it would have removed more 
 spurious ones. Both are recorded in section 6 rather than quietly dropped, because the next person to
 have the same idea should find the measurement waiting.
 
-## 15. Where every corpus stands at the end of this branch
+## 16. Where every corpus stands at the end of this branch
 
 Filter `all`, arithmetic macro mean, one run of the whole harness at the last commit:
 
@@ -680,7 +713,7 @@ Filter `all`, arithmetic macro mean, one run of the whole harness at the last co
 **875,544 truth functions across ten corpora, 927,097 detections, no failed sample.** Five of the ten
 corpora and 420,073 of those truth functions did not exist for this project before this branch.
 
-## 16. Summary of what landed
+## 17. Summary of what landed
 
 | fix | corpus that shows it | before → after |
 |---|---|---|
@@ -688,7 +721,11 @@ corpora and 420,073 of those truth functions did not exist for this project befo
 | exception table read from the declared directory | .NET ReadyToRun image, 626 declared starts | recall 66.93 → **100.00** |
 | a call that does not return is a boundary | ARM64 Mach-O, n=11 | recall 95.616 → **96.345**, 28 recovered, 0 new false positives |
 | a prologue that opens where another ends | ten corpora | **912** false positives removed, **0** true positives lost |
+| the cut after a call recovers the function, not a seed | ARM64 Mach-O n=11 and Go n=45 | 12 recovered, **458** false positives removed |
 
-No corpus lost recall at any step. Two proposed repairs were measured and rejected, and both are in
-section 6 with the numbers that rejected them.
+No corpus lost recall at any step. Five further proposals were measured and not landed — four
+rejected for costing recall or removing more real functions than spurious ones, one found to change
+nothing worth changing — and all five are in section 6 with the numbers that settled them. One of
+those five, gating both AArch64 tailcall sites, is where the fix in section 10 came from: separating
+the two sites turned a rejected whole into a landed half.
 

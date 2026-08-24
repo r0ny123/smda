@@ -113,11 +113,13 @@ the origin evaluation aggregates them. TPR / PPV.
 | `GB` ByteWeight msvc10-64 | O2 | 17 | 0.703 / 0.999 | 0.809 / 0.999 | 0.972 / 0.981 | 0.998 / 0.993 |
 | `GB*` ByteWeight* msvc10-32 | – | 56 | 0.775 / 0.953 | 0.777 / 0.953 | 0.967 / 0.910 | 0.975 / 0.912 |
 | `GB*` ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
-| `GM` Malpedia57 | – | 57 | 0.819 / 0.940 | pending | 0.976 / 0.935 | 0.986 / 0.926 |
+| `GM` Malpedia57 | – | 57 | 0.819 / 0.940 | 0.849 / 0.961 | 0.976 / 0.935 | 0.986 / 0.926 |
 
-**Ghidra reproduces.** On four of the five comparable cells, Ghidra 12.1.3 lands within 0.002 to
+**Ghidra reproduces.** On four of the six comparable cells, Ghidra 12.1.3 lands within 0.002 to
 0.013 of what was recorded for Ghidra 9.1.2 — a different major version, five years apart, and the
-same metric implementation returning the published numbers. That is the strongest available check
+same metric implementation returning the published numbers. The malware corpus is the one row where
+it has genuinely improved, +0.030 recall and +0.021 precision, and even there it recovers 0.849
+against SMDA's 0.986. That is the strongest available check
 that this harness computes the paper's metric rather than a metric of its own: the earlier check
 compared SMDA against a recorded SMDA measurement, which cannot rule out a shared assumption.
 
@@ -125,8 +127,9 @@ compared SMDA against a recorded SMDA measurement, which cannot rule out a share
 hardest one: the dumped 64-bit corpus goes from 0.932 to 0.998, where the corpora with headers were
 already close to their ceiling. Precision is flat to slightly better everywhere.
 
-**Ghidra has barely moved.** Its largest change on a comparable cell is +0.013 recall. The gap the
-origin evaluation reported between the two tools on memory dumps is wider today than it was.
+**Ghidra has barely moved.** Its largest change on a comparable ByteWeight cell is +0.013 recall,
+and +0.030 on the malware corpus. The gap the origin evaluation reported between the two tools on
+memory dumps is wider today than it was: 0.663 against 0.998 on the dumped 64-bit set.
 
 ## Where a replication is expected to diverge from the published numbers
 
