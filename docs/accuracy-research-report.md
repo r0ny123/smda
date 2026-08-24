@@ -21,6 +21,13 @@ It was validated before it was used for anything: SMDA 4.4.1 from PyPI reproduce
 recorded five-corpus measurement to three decimals under both optimization filters, with the
 imported module's path written into every result file so the tree that ran is not in doubt.
 
+"Runs from a clean checkout" is checked rather than asserted: a fresh clone of this branch, an empty
+ground-truth root, and the clone's own `src` on `PYTHONPATH` builds the ARM64 Mach-O corpus and
+measures it to the same figures this report prints — 94.008 / 96.345 / 94.778 over 2,753 truth
+functions, with the same fixture skipped for the same recorded reason. That corpus is the one this
+can be shown on end to end because it needs no toolchain and no download; the others need their
+compilers and go through the same code path.
+
 Five corpora came with it, none of which existed for this project before:
 
 | corpus | cells | truth functions | ground truth |
@@ -89,8 +96,9 @@ where the unpacked sets were already near their ceiling.
 
 ## 4. Where today's SMDA stands
 
-Filter `all`, arithmetic macro mean, commit `802e627` (SMDA 4.4.7), against SMDA 4.4.1 measured
-through the same harness:
+This is the **baseline** these corpora were at before any change on this branch — section 15 has the
+end state. Filter `all`, arithmetic macro mean, commit `802e627` (SMDA 4.4.7), against SMDA 4.4.1
+measured through the same harness:
 
 | corpus | n | PPV | TPR | F1 | Δ F1 vs 4.4.1 | Δ TPR vs 4.4.1 |
 |---|---|---|---|---|---|---|

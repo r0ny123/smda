@@ -1348,3 +1348,25 @@ is what the reject criterion reads, and it falls. **Rejected as a blunt gate.**
 What the numbers argue for is the narrower rule the other two fixes took: keep the source and refuse
 the cases that are provably interior, rather than switching the source off. The seven true positives
 are the thing to characterise next, and this measurement is what says they exist.
+
+---
+
+## 2026-08-24 — the clean-checkout claim, verified rather than asserted
+
+The harness is described as runnable from a clean checkout, which is easy to write and easy to be
+wrong about after a day of working in one tree. Checked directly: a fresh clone of the pushed branch,
+an empty ground-truth root, and the checkout's own `src` on `PYTHONPATH` so nothing of the working
+tree can leak in.
+
+```
+git clone --branch <branch> --single-branch <fork> clean-check
+SMDA_BENCH_GROUNDTRUTH=<empty dir> tools/bench/build_corpus.py --family macho-arm64 --out .../built
+  [macho-arm64] ok=11 failed=1
+SMDA_BENCH_GROUNDTRUTH=<empty dir> tools/bench/run.py --corpus macho-arm64 --engine smda --filter all
+  ARM64 Mach-O (LC_FUNCTION_STARTS)  smda  all  11  94.008  96.345  94.778  2512  263  241
+```
+
+The same figures the report prints, from a tree that has never been worked in, with the same skip
+recorded for the fixture that declares no function starts. The corpus that needs no toolchain and no
+download is the one this can be shown on end to end; the others need their compilers, and their
+recipes are the same code path.
