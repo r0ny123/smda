@@ -705,12 +705,12 @@ Filter `all`, arithmetic macro mean, one run of the whole harness at the last co
 | Bao_Dumped msvc10-64-d | 56 | 98.874 | 99.811 | 99.338 | 106,679 | 108,455 |
 | Plohmann malpedia itw | 57 | 92.643 | 98.561 | 95.144 | 21,924 | 24,270 |
 | Built C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 213,441 | 229,371 |
-| Built Go (pclntab truth) | 45 | 94.843 | 99.618 | 97.118 | 162,621 | 171,768 |
+| Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 162,621 | 171,338 |
 | Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
 | Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
-| ARM64 Mach-O (linker truth) | 11 | 94.008 | 96.345 | 94.778 | 2,753 | 2,775 |
+| ARM64 Mach-O (linker truth) | 11 | 94.217 | 96.446 | 94.936 | 2,753 | 2,759 |
 
-**875,544 truth functions across ten corpora, 927,097 detections, no failed sample.** Five of the ten
+**875,544 truth functions across ten corpora, 926,651 detections, no failed sample.** Five of the ten
 corpora and 420,073 of those truth functions did not exist for this project before this branch.
 
 ## 17. Summary of what landed
