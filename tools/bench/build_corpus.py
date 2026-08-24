@@ -20,7 +20,10 @@ from typing import List, Optional
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-FAMILIES = ["native", "go", "rust", "dotnet"]
+#: the checkout this script lives in; the ARM64 Mach-O corpus is carried in it
+REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+FAMILIES = ["native", "go", "rust", "dotnet", "macho-arm64"]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -69,6 +72,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             from bench.builders.rust_family import build as buildRust
 
             manifest = buildRust(out_dir, work_dir)
+        elif family == "macho-arm64":
+            from bench.builders.macho_arm64 import buildMachoArm64
+
+            manifest = buildMachoArm64(out_dir, REPOSITORY_ROOT)
         else:
             from bench.builders.dotnet_family import build as buildDotnet
 

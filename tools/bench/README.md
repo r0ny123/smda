@@ -75,12 +75,21 @@ Set `SMDA_BENCH_GROUNDTRUTH` to the ground-truth root (default `~/groundtruth_da
 | `go` | Go across GOOS/GOARCH and link modes | `go tool nm` over the unstripped build |
 | `rust` | Rust across targets, profiles and LTO | symbol table of the unstripped link |
 | `dotnet` | CIL, ReadyToRun, single-file and NativeAOT | assembly metadata; symbols for the native image |
+| `macho-arm64` | ARM64 Mach-O, from the repository's own fixture corpus | `LC_FUNCTION_STARTS`, written by the linker |
 
-The four built families are produced by:
+The built families are produced by:
 
 ```
-tools/bench/build_corpus.py --family native,go,rust,dotnet --out "$SMDA_BENCH_GROUNDTRUTH/built"
+tools/bench/build_corpus.py --family native,go,rust,dotnet,macho-arm64 --out "$SMDA_BENCH_GROUNDTRUTH/built"
 ```
+
+`macho-arm64` needs no toolchain and no download: it decodes the ARM64 Mach-O fixtures the
+repository already carries and reads each one's `LC_FUNCTION_STARTS`. It is the only AArch64
+accuracy corpus here whose ground truth comes from a linker rather than from one compiler's
+metadata, and the decoded binaries are written under the ground-truth root, never back into the
+repository. A fixture that carries the load command with nothing in it is skipped and named in the
+manifest — an empty truth set would score every detection as a false positive and read as a
+catastrophic result rather than as missing truth.
 
 Each family writes a `manifest.json` recording every cell it attempted, including the failures and
 why — a matrix that quietly shrank must not read like one that passed.
@@ -95,9 +104,36 @@ why — a matrix that quietly shrank must not read like one that passed.
   own loader; a headerless dump is imported as raw bytes at its stated base address, which is the
   same input SMDA gets. The exact Ghidra version is recorded in every result file.
 
+## Replicating the origin evaluation
+
+`tools/bench/paper_table.py results/` prints the origin paper's comparison table from result files
+this harness wrote, applying the per-row aggregation that evaluation used — geometric mean per
+optimization level for rows whose binaries carry an `O0`-`O3` label, arithmetic mean over all of
+them for rows that do not. Columns for engines that cannot be re-run here are labelled `(paper)`
+against `(measured)` in the header, and a corpus an engine was not run on prints `not measured`
+rather than a blank. `docs/paper-replication.md` records the metric definitions and corpus
+composition it is replicating.
+
+## Withholding the bitness
+
+`--bitness corpus` (default) hands the engine the bitness the corpus declares, which is what the
+published comparisons did. `--bitness auto` withholds it, which is what a caller analysing an
+unknown dump actually gets. The two answer different questions and results are written to
+separate files so they cannot be mistaken for one another.
+
 ## The harness asserts its own success
 
 A sample whose engine errored, timed out, or returned nothing is counted as a failure, listed, and
 — past `--max-failures` — aborts the report. Two identical sets of *errors* otherwise read as "no
 difference". `summarize.py --compare` refuses a comparison whose two sides have different `n`, and
-exits non-zero if TPR fell on any config.
+exits non-zero if TPR fell on any config. `paper_table.py` marks a cell holding an incomplete
+sample with `!k` and names the samples beneath the table: an incomplete run scores 0, and the
+geometric mean an optimization-level row uses carries that zero into the cell, so the figure has to
+carry the reason with it.
+
+Before printing any metric, `run.py` reports a corpus-integrity check: for every sample whose
+binary has a section table, whether its ground truth lands inside an executable section, together
+with how many samples the check could run on at all. A headerless dump names no sections, so the
+check does not apply there and silence must not be read as a pass. `--exclude-known-defects` drops
+samples recorded in `corpora.KNOWN_TRUTH_DEFECTS` as describing a different build, and is off by
+default because every published figure for these corpora includes them.

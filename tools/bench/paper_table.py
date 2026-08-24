@@ -113,8 +113,19 @@ def _mean(values: List[float]) -> Optional[float]:
     return sum(values) / len(values) if values else None
 
 
-def cell(samples: List[Dict], corpus_key: str, opt: str) -> Optional[Tuple[float, float, int]]:
-    """(TPR, PPV, n) for one table cell, aggregated the way the paper prints it."""
+def failedSamples(samples: List[Dict]) -> List[str]:
+    """Names of samples the engine did not complete.
+
+    A sample that errored or timed out scores 0, which the geometric mean carries
+    through to the whole cell. That is the arithmetically correct answer to "what
+    did this engine score" and the wrong answer to "how good is this engine", so a
+    cell holding one has to say so rather than print a number.
+    """
+    return [sample["name"] for sample in samples if str((sample.get("meta") or {}).get("status", "unknown")) != "ok"]
+
+
+def cell(samples: List[Dict], corpus_key: str, opt: str) -> Optional[Tuple[float, float, int, List[str]]]:
+    """(TPR, PPV, n, failed) for one table cell, aggregated the way the paper prints it."""
     if corpus_key in SPLIT_BY_OPT:
         chosen = [sample for sample in samples if (sample.get("meta") or {}).get("opt") == opt]
         aggregator = _geomean
@@ -128,7 +139,7 @@ def cell(samples: List[Dict], corpus_key: str, opt: str) -> Optional[Tuple[float
     tpr, ppv = aggregator(tprs), aggregator(ppvs)
     if tpr is None or ppv is None:
         return None
-    return tpr / 100.0, ppv / 100.0, len(chosen)
+    return tpr / 100.0, ppv / 100.0, len(chosen), failedSamples(chosen)
 
 
 def loadMeasured(results_dir: str) -> Dict[str, Dict]:
@@ -173,6 +184,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     payload_rows = []
     missing = []
+    incomplete: List[str] = []
     for corpus_key, opt in ROW_ORDER:
         recorded = PAPER_TABLE[(corpus_key, opt)]
         line_n = None
@@ -187,6 +199,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             cells[engine] = computed
             if computed:
                 line_n = computed[2]
+                for name in computed[3]:
+                    incomplete.append(f"{engine}:{corpus_key}:{opt}:{name}")
         line = f"{TITLES[corpus_key]:<28} {opt:<4} {str(line_n or '-'):>4} |"
         for column in paper_columns:
             tpr, ppv = recorded[column]
@@ -195,6 +209,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             computed = cells[engine]
             if computed is None:
                 line += f" {'not measured':>25} |"
+            elif computed[3]:
+                line += f"  TPR {_fmt(computed[0])} PPV {_fmt(computed[1])} !{len(computed[3]):<2}|"
             else:
                 line += f"      TPR {_fmt(computed[0])} PPV {_fmt(computed[1])} |"
         print(line)
@@ -205,7 +221,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "n": line_n,
                 "paper": {name: {"tpr": value[0], "ppv": value[1]} for name, value in recorded.items()},
                 "measured": {
-                    engine: (None if cells[engine] is None else {"tpr": cells[engine][0], "ppv": cells[engine][1]})
+                    engine: (
+                        None
+                        if cells[engine] is None
+                        else {
+                            "tpr": cells[engine][0],
+                            "ppv": cells[engine][1],
+                            "failed_samples": cells[engine][3],
+                        }
+                    )
                     for engine in engines
                 },
             }
@@ -215,8 +239,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(
         "[control] rows="
         f"{len(payload_rows)} engines_measured={engines} "
-        f"paper_columns_are_recorded_not_remeasured={paper_columns} missing={sorted(set(missing))}"
+        f"paper_columns_are_recorded_not_remeasured={paper_columns} missing={sorted(set(missing))} "
+        f"cells_with_incomplete_samples={len(set(incomplete))}"
     )
+    if incomplete:
+        print(
+            "[!] `!k` marks a cell holding k samples the engine did not complete. Those score 0 and the "
+            "cell's mean carries it; the figure is not a comparison against the paper's."
+        )
+        for entry in sorted(set(incomplete)):
+            print(f"[incomplete] {entry}")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as json_file:
             json.dump({"rows": payload_rows, "engines": engines, "paper_columns": paper_columns}, json_file, indent=1)

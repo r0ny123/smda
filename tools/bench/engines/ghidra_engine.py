@@ -65,7 +65,7 @@ class GhidraEngine:
             SCRIPT_NAME,
             output,
             "-deleteProject",
-            "-noanalysis" if False else "-analysisTimeoutPerFile",
+            "-analysisTimeoutPerFile",
             str(self.timeout),
         ]
         if base_addr is not None:

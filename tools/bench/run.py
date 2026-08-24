@@ -88,7 +88,7 @@ def runCorpus(
             failures.append(f"{name}: status={status} detected={len(starts)} {str(info.get('message', ''))[:160]}")
         meta = dict(sample.meta)
         meta.update({"seconds": info.get("seconds"), "status": status})
-        scores.append(scoreSample(name, sample.truth, set(starts), meta))
+        scores.append(scoreSample(name, sample.truth, set(starts), meta, sample.scored_ranges))
     engine_info = buildEngine(kind, options).describe()
     return scores, engine_info, failures
 

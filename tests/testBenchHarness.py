@@ -24,6 +24,7 @@ from bench.corpora import (  # noqa: E402
     parseOptLevel,
 )
 from bench.metrics import aggregate, scoreSample  # noqa: E402
+from bench.paper_table import cell, failedSamples  # noqa: E402
 from bench.report import renderRow, renderTable, writeResults  # noqa: E402
 
 
@@ -220,3 +221,51 @@ class BenchReportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaperTableCellTest(unittest.TestCase):
+    """A cell that averages an engine's failure has to say so."""
+
+    @staticmethod
+    def _sample(name, tpr, ppv, opt="O1", status="ok"):
+        return {"name": name, "tpr": tpr, "ppv": ppv, "meta": {"opt": opt, "status": status}}
+
+    def testASplitRowUsesTheGeometricMeanOfItsOwnOptimizationLevel(self):
+        samples = [
+            self._sample("a", 90.0, 80.0, opt="O1"),
+            self._sample("b", 10.0, 20.0, opt="O1"),
+            self._sample("c", 50.0, 50.0, opt="O2"),
+        ]
+        tpr, ppv, count, failed = cell(samples, "bao-x86", "O1")
+        self.assertEqual(count, 2)
+        self.assertEqual(failed, [])
+        self.assertAlmostEqual(tpr, 0.3, places=6)
+        self.assertAlmostEqual(ppv, 0.4, places=6)
+
+    def testAnUnsplitRowUsesTheArithmeticMeanOfEveryBinary(self):
+        samples = [self._sample("a", 90.0, 80.0, opt=""), self._sample("b", 10.0, 20.0, opt="")]
+        tpr, ppv, count, failed = cell(samples, "malpedia", "-")
+        self.assertEqual((count, failed), (2, []))
+        self.assertAlmostEqual(tpr, 0.5, places=6)
+        self.assertAlmostEqual(ppv, 0.5, places=6)
+
+    def testACellNamesTheSamplesTheEngineDidNotComplete(self):
+        samples = [
+            self._sample("finished", 90.0, 90.0),
+            self._sample("gave-up", 0.0, 0.0, status="timeout"),
+        ]
+        tpr, ppv, count, failed = cell(samples, "bao-x86", "O1")
+        # control: the cell really did collapse, so the annotation is the only thing
+        # separating "the engine scored zero" from "the engine did not answer"
+        self.assertEqual((tpr, ppv), (0.0, 0.0))
+        self.assertEqual(count, 2)
+        self.assertEqual(failed, ["gave-up"])
+
+    def testASampleWithNoRecordedStatusCountsAsIncomplete(self):
+        self.assertEqual(failedSamples([{"name": "a", "meta": {}}]), ["a"])
+        self.assertEqual(failedSamples([{"name": "a"}]), ["a"])
+        self.assertEqual(failedSamples([{"name": "a", "meta": {"status": "ok"}}]), [])
+
+    def testACellWithNoScoreableSampleIsNotReported(self):
+        self.assertIsNone(cell([], "bao-x86", "O1"))
+        self.assertIsNone(cell([self._sample("a", None, None)], "bao-x86", "O1"))

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -64,7 +64,30 @@ class SampleScore:
         }
 
 
-def scoreSample(name: str, truth: Set[int], detected: Set[int], meta: Optional[Dict] = None) -> SampleScore:
+def _inside(address: int, ranges: List[Tuple[int, int]]) -> bool:
+    return any(start <= address < end for start, end in ranges)
+
+
+def scoreSample(
+    name: str,
+    truth: Set[int],
+    detected: Set[int],
+    meta: Optional[Dict] = None,
+    scored_ranges: Optional[List[Tuple[int, int]]] = None,
+) -> SampleScore:
+    """Score one binary, optionally only where the corpus' oracle has authority.
+
+    `scored_ranges` names the address ranges the ground truth covers. A detection
+    outside them is neither a true nor a false positive: the corpus says nothing
+    there, and counting it as an error would charge the engine for the oracle's
+    coverage. The number dropped is recorded, because a scored region that quietly
+    shrank reads exactly like precision that rose.
+    """
+    recorded = dict(meta or {})
+    if scored_ranges:
+        in_scope = {address for address in detected if _inside(address, scored_ranges)}
+        recorded["outside_scored_region"] = len(detected) - len(in_scope)
+        detected = in_scope
     true_positives = truth & detected
     return SampleScore(
         name=name,
@@ -73,7 +96,7 @@ def scoreSample(name: str, truth: Set[int], detected: Set[int], meta: Optional[D
         true_positives=len(true_positives),
         false_positives=len(detected - truth),
         false_negatives=len(truth - detected),
-        meta=dict(meta or {}),
+        meta=recorded,
     )
 
 

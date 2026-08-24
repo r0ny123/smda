@@ -63,6 +63,10 @@ PROGRAMS: Dict[str, SourceProgram] = {
         revision="v1.3.1",
         sources=["*.c", "test/minigzip.c"],
         include_dirs=["."],
+        # gzwrite.c reaches for write() and close() only when told the header is there;
+        # zlib's own configure defines this and a compiler that rejects implicit
+        # declarations fails the file without it
+        defines=["HAVE_UNISTD_H=1"],
     ),
     "xxhash": SourceProgram(
         key="xxhash",

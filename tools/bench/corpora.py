@@ -13,7 +13,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 DUMP_BASE_RE = re.compile(r"_0x(?P<base_addr>[0-9a-fA-F]{8,16})$")
 OPT_LEVEL_RE = re.compile(r"_(?P<opt>O[0-9a-zA-Z]+)_")
@@ -28,6 +28,10 @@ class Sample:
     base_addr: Optional[int] = None
     #: architecture hint for engines that cannot infer it from a headerless dump
     bitness: Optional[int] = None
+    #: address ranges the ground truth covers; None scores the whole image. A corpus
+    #: whose oracle speaks for part of an image sets this rather than charging the
+    #: engine for the rest.
+    scored_ranges: Optional[List[Tuple[int, int]]] = None
     meta: Dict[str, object] = field(default_factory=dict)
 
 
@@ -198,6 +202,7 @@ def _builtLoader(family: str, plt_in_truth: bool = True):
                 truth |= set(record.get("plt", []))
             meta = {key: value for key, value in record.items() if key not in ("starts", "plt")}
             meta["family"] = family
+            scored = record.get("scored_ranges")
             samples.append(
                 Sample(
                     name=name,
@@ -205,6 +210,7 @@ def _builtLoader(family: str, plt_in_truth: bool = True):
                     truth=truth,
                     base_addr=None,
                     bitness=record.get("bitness"),
+                    scored_ranges=[(int(start), int(end)) for start, end in scored] if scored else None,
                     meta=meta,
                 )
             )
@@ -265,6 +271,13 @@ CORPORA: Dict[str, Corpus] = {
         truth_source="symbol table of the unstripped link, measured on the stripped twin",
         loader=_builtLoader("rust"),
         relative_root=os.path.join(BUILT_ROOT, "rust"),
+    ),
+    "macho-arm64": Corpus(
+        key="macho-arm64",
+        title="ARM64 Mach-O (LC_FUNCTION_STARTS)",
+        truth_source="LC_FUNCTION_STARTS, written by the linker, in the repository's own fixture corpus",
+        loader=_builtLoader("macho-arm64"),
+        relative_root=os.path.join(BUILT_ROOT, "macho-arm64"),
     ),
     "dotnet": Corpus(
         key="dotnet",
