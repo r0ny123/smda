@@ -1228,7 +1228,11 @@ produced them:
 ```
 
 The check covers the five per-family rows (PPV, TPR, F1 and truth count each), the five frozen
-corpora, and the three micro figures the AArch64 argument rests on. It is worth running rather than
+corpora, and the three micro figures the AArch64 argument rests on. Run again after the fifth fix
+landed, over all ten end-state rows including their detection counts, it found exactly one mismatch:
+the Go and ARM64 Mach-O rows and the total detection count were still carrying the fix's *inputs*.
+42 figures checked, one wrong, and it was the one a human re-reading the prose would not have caught,
+because the sentence around it was still true of the run it was written from. It is worth running rather than
 trusting, because every one of those numbers passed through prose at least once between the run that
 produced it and the table that prints it, and a figure that is only ever compared against the
 sentence it was copied into cannot disagree with anything.
