@@ -112,3 +112,15 @@ Two figures from it are load-bearing for how a disagreement on these corpora sho
    would have provided.
 4. **One ByteWeight binary is paired with the wrong ground truth** (see the research log). It is
    included by default, because every published figure for this corpus includes it.
+
+## Running the replication
+
+```
+tools/bench/run.py --corpus all --engine smda,ghidra --filter all --out results/
+tools/bench/paper_table.py results/ --json results/paper_table.json
+```
+
+The table prints the paper's recorded values and the measured ones side by side, with `(paper)` and
+`(measured)` in the column headers, and ends with a control line naming which engines were actually
+measured and which columns are recorded. A corpus an engine has not been run on prints
+`not measured` rather than a blank, so a missing engine cannot be read as a bad score.

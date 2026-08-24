@@ -305,3 +305,277 @@ Stripping moves no code, so the two describe the same addresses.
 - **A managed PE's method starts are its metadata's body RVAs**, not addresses — the CIL backend
   reports offsets into the file, which is a different address space from every other family here.
   The CIL and NativeAOT cells are therefore kept as separate rows rather than pooled.
+
+---
+
+## 2026-08-24 — .NET: two of the three shapes are exact, the third is the weakest family measured
+
+Built corpus, `dotnet`, filter `all`. Truth for a managed assembly is every `MethodDef` row with a
+non-zero RVA, mapped to a **file offset**, because that is the address space the CIL backend
+reports in. Truth for the NativeAOT image is the symbol table of the `.dbg` companion the publish
+emits beside the stripped binary.
+
+| cell | kind | truth | detected | TP | FP | FN | PPV | TPR | F1 |
+|---|---|---|---|---|---|---|---|---|---|
+| framework-dependent | CIL | 564 | 564 | 564 | 0 | 0 | 100.00 | 100.00 | 100.00 |
+| self-contained | CIL | 564 | 564 | 564 | 0 | 0 | 100.00 | 100.00 | 100.00 |
+| readytorun | CIL | 564 | 564 | 564 | 0 | 0 | 100.00 | 100.00 | 100.00 |
+| nativeaot | native | 5,749 | 7,664 | 5,625 | 2,039 | 124 | **73.40** | 97.84 | 83.87 |
+
+Managed CIL is exact and uninteresting: metadata enumerates every method body, and the backend
+reads it. **NativeAOT is a different problem entirely** — at PPV 73.40 it is the least precise
+result of any corpus measured here, against 92.0 on the 32-bit ByteWeight set and 92.6 on the
+malware corpus, and it is native x86-64 code reached through the ordinary intel path.
+
+### ReadyToRun scores 100% because two thirds of its code is not looked at
+
+The `readytorun` cell's perfect score is an artefact. Its `.text` is 110,080 bytes against 60,928
+for the same program published without ReadyToRun — roughly 49 KB of precompiled native x86-64
+code. SMDA sees the CLR header, routes the image to the CIL backend, reports the 564 CIL method
+bodies, and never touches the native code.
+
+The image declares that code outright. Its PE exception directory holds **626 `RUNTIME_FUNCTION`
+entries** — an authoritative table of every precompiled method:
+
+| routing | native functions recovered | PPV | TPR |
+|---|---|---|---|
+| default (CIL backend) | 0 | – | 0.00 |
+| intel backend forced | 419 | 100.00 | 66.93 |
+
+So the native code is recoverable, at perfect precision, and the default routing recovers none of
+it. That is a design decision rather than a bug — a CIL report addresses methods by file offset and
+a native report by virtual address, so the two cannot simply be merged — and it is recorded here
+for the maintainer rather than changed.
+
+### The missing third has a mechanism, and it is the same class as this branch's first fix
+
+Forcing the intel backend recovers 419 of 626. `locateExceptionHandlerCandidates` finds the
+exception table by looking for a **section named `.pdata`**. In a ReadyToRun image the table lives
+in `.data`, and the code neither reads the PE exception *directory* — which names its address
+outright — nor falls back to carving, because that fallback only runs when the image has no
+sections at all.
+
+Surveyed across every PE available here, with the corpus named for each figure:
+
+| corpus | PEs | with an exception directory | of those, inside `.pdata` | elsewhere |
+|---|---|---|---|---|
+| ByteWeight msvc10-64 | 68 | 68 | 68 | 0 |
+| ByteWeight msvc10-32 | 68 | 0 | – | – |
+| malpedia (parseable PEs) | 48 | 3 | 3 | 0 |
+| built .NET | 3 | 1 | 0 | **1** (626 entries, in `.data`) |
+
+The frozen corpora do not exercise this path at all: MSVC always names the section `.pdata`. The
+only corpus that reaches it is the one built for this work, which is precisely why it had never
+been found.
+
+---
+
+## 2026-08-24 — Corpus inventory built
+
+| family | cells built | cells failed | truth functions | notes |
+|---|---|---|---|---|
+| `dotnet` | 4 | 1 | 7,441 | the failure is `single-file`: the assembly is inside the apphost bundle and nothing here unpacks it |
+| `go` | 45 | 2 | 162,621 | 3 programs × 7 GOOS/GOARCH × default/stripped/pie, plus a cgo axis |
+| `rust` | 24 | 0 | 33,817 | 2 crates × 3 targets (linux-gnu, windows-gnu x64 and x86) × debug/release/release-lto/release-panic-abort |
+| `native` | building | | | 10 programs × gcc/clang/mingw-x64/mingw-x86 × O0/O1/O2/O3/Os/static/no-pie |
+
+A Go `stripped` cell is scored against the symbols of its unstripped twin, because `-ldflags="-s -w"`
+removes exactly the table `go tool nm` reads. The builder asserts the two agree on the text
+section's address and size before pairing them, and records `layout_moved` rather than pairing them
+if they do not.
+
+`single-file` not being scoreable is itself the finding: a .NET single-file publish embeds the
+managed assembly inside a native apphost bundle, and nothing in this toolchain reaches the CIL
+inside it.
+
+### Controls for the exception-table change
+
+Before measuring anything, the question "can this move an existing baseline at all" was answered
+directly. Every PE fixture bundled with the test suite, decoded:
+
+| fixture | exception directory | section holding it |
+|---|---|---|
+| `cxx_pe_gnu_xored` | yes | `.pdata` |
+| `msvc_cxx_pe_xored` | yes | `.pdata` |
+| `rust_pe_gnu_xored` | yes | `.pdata` |
+| `dotnet_readytorun_pe_xored` | yes | **`.data`** |
+| `cutwail`, `njrat`, `pe_export_label_test`, `msvc_cxx_pdb_pe`, `rust_pe_msvc_i686` | no | – |
+
+For the three that already worked, the directory and the section-extent walk read the *same* number
+of entries — 48, 7 and 1,666 respectively — so the two paths are not merely both non-empty, they
+agree entry for entry. The only fixture where they differ is the one added for this change.
+
+### The NativeAOT precision figure is partly a truth gap
+
+PPV 73.40 on the NativeAOT image is the worst number in this whole evaluation, so before treating
+it as a defect it was worth asking whether the truth is right. The image carries a second,
+independent declaration of where its functions are: `.eh_frame`.
+
+| source | function ranges |
+|---|---|
+| symbol table of the `.dbg` companion | 5,749 |
+| `.eh_frame` FDE ranges | 6,513 |
+| in both | 5,608 |
+| union | 6,654 |
+
+**702 of the 2,039 apparent false positives are ranges `.eh_frame` declares** — real function bodies
+the symbol table does not name. Scored against the union instead:
+
+| truth | PPV | TPR |
+|---|---|---|
+| symbol table only | 73.40 | 97.84 |
+| symbols ∪ `.eh_frame` | **82.55** | 95.09 |
+
+The corpus keeps the symbol-table truth, because SMDA *reads* `.eh_frame` itself as a candidate
+source — using it as ground truth would score the disassembler against its own input. The right
+reading is that the symbol-only precision is a **lower bound**: at least 702 of those false
+positives are the disassembler correctly reading an authority the truth file omits, and roughly
+1,337 remain genuinely unexplained. That 1,337 is the number worth attacking, not 2,039.
+
+**A second lead falls out of the same measurement.** 326 of the 6,513 FDE-declared ranges are not
+reported at all, and every one of them is inside an executable section — this image has two
+non-standard ones, `__managedcode` (790 KB) and `__unbox`. SMDA reports 95% of what `.eh_frame`
+declares here; the missing 5% is a recall question that is not specific to .NET and should be
+checked against the C/C++ corpus, where symbol tables are complete enough to tell a truth gap from
+a miss.
+
+### A test bug worth recording: lief section objects do not own their parse
+
+Writing the fallback test, `[section.name for section in lief.PE.parse(buffer).sections]` segfaulted
+the interpreter. The parsed binary is a temporary; its section objects reference it and outlive it.
+Binding each parse to a name fixes it. Nothing in the disassembler does this — every reader there
+holds the parse — but it is an easy shape to write in a test and it fails as a crash rather than a
+wrong answer.
+
+---
+
+## 2026-08-24 — Go: recall is essentially perfect, and precision depends on the architecture
+
+Built corpus, `go`, 45 cells, 3 programs × 7 GOOS/GOARCH × default/stripped, plus PIE on the host
+triple. Truth is `go tool nm` reading the pclntab of the unstripped build; a stripped cell is scored
+against its twin after asserting both place `.text` at the same address and size.
+
+| | n | PPV | TPR | F1 |
+|---|---|---|---|---|
+| whole corpus | 45 | 94.843 | 99.618 | 97.118 |
+
+**Stripping costs nothing.** default 94.916 / 99.668 against stripped 94.939 / 99.668 over 21 cells
+each. The pclntab survives `-ldflags="-s -w"` and the recovery that reads it does too, which is the
+behaviour the design intends and had not previously been measured end to end.
+
+### Precision is a function of the target architecture, and recall is not
+
+Same three programs, same toolchain, same OS — only `GOARCH` differs:
+
+| architecture | false positives | truth functions | FP per truth function |
+|---|---|---|---|
+| 386 | 375 | 21,691 | 0.0173 |
+| amd64 | 1,196 | 32,565 | 0.0367 |
+| **arm64** | **2,907** | 21,687 | **0.1340** |
+
+Per program, `default` mode, precision:
+
+| program | linux/amd64 | linux/arm64 | linux/386 | darwin/amd64 | darwin/arm64 |
+|---|---|---|---|---|---|
+| cryptozip | 96.346 | 87.914 | 98.870 | 94.569 | 92.891 |
+| hello | 96.079 | 88.041 | 99.096 | 94.000 | 92.141 |
+| netjson | 97.053 | **80.906** | 97.905 | 95.845 | 93.781 |
+
+The AArch64 backend over-detects **3.6× more per function than the intel backend on identical
+source**, and it does so on every program and both operating systems. Recall is unaffected — TPR is
+100.000 on all six linux/arm64 cells.
+
+### The extra detections are splits, not inventions
+
+On `hello_linux-arm64_default`: 245 of 246 false positives (99.6%) fall **inside a real function's
+span**. The amd64 build of the same program has 72 of 73 (98.6%) — the same shape, a third as often.
+Nothing is being invented in data; real function bodies are being cut in two.
+
+The two architectures cut in different places. On amd64 the commonest offset from the enclosing
+function's start is **+4** (28 of 73). On arm64 the offsets are spread — 48, 176, 52, 56, 64, 60 —
+which is deeper into the body than a prologue-shape mistake and looks like interior branch targets
+being promoted to entries.
+
+---
+
+## 2026-08-24 — Rust: the least precise family, and the truth is not the reason
+
+Built corpus, `rust`, 24 cells: 2 crates × {linux-gnu-x64, windows-gnu-x64, windows-gnu-x86} ×
+{debug, release, release-lto, release-panic-abort}. Truth is the unstripped link's symbol table;
+the corpus keeps the stripped twin.
+
+| | n | PPV | TPR | F1 |
+|---|---|---|---|---|
+| whole corpus | 24 | **75.817** | 97.493 | 85.193 |
+
+| target | n | PPV | TPR | FP per truth function |
+|---|---|---|---|---|
+| linux-gnu-x64 | 8 | 71.927 | 98.061 | 0.3941 |
+| windows-gnu-x64 | 8 | 81.696 | 97.628 | 0.2133 |
+| windows-gnu-x86 | 8 | 73.828 | 96.790 | 0.3093 |
+
+For scale: the same measure on the 32-bit ByteWeight corpus is about 0.06, and on Go/amd64 0.037.
+
+**The truth is complete.** The NativeAOT result made this worth checking: `.eh_frame` there named 764
+ranges the symbol table omitted. On Rust it names *fewer* — 571 FDEs against 577 symbols on
+`fmtheavy_linux-gnu-x64_release` — and the union equals the symbol truth exactly. The precision
+figure is genuine over-detection.
+
+### Where the false positives come from
+
+95.3% are interior to a sized function body, so real bodies are being cut, not data invented.
+Histogramming them by the candidate source that seeded them:
+
+| cell | gap search | initial, no reference | initial with a call reference |
+|---|---|---|---|
+| `fmtheavy_linux-gnu-x64_release` (ELF) | 101 | **139** | 0 |
+| `panicheavy_windows-gnu-x86_release` (PE) | 450 | 29 | 167 |
+
+The 32-bit PE profile is the familiar one — gap search dominating, as the origin paper's own
+reliability table shows. **The ELF x64 profile is not**: 139 of 253 are candidates seeded with no
+reference pointing at them at all.
+
+### 123 of those 139 are one byte pattern, four bytes inside a real function
+
+Decoding the reference-less false positives on `fmtheavy_linux-gnu-x64_release`:
+
+| first instruction | count |
+|---|---|
+| `push r15` | **123** |
+| `push rbp` | 16 |
+| `jmp qword ptr [rip + …]` | 9 (import stubs) |
+
+`push r15` is the head of `41 57 41 56` — `push r15; push r14` — which is on the whole-binary
+**seeded** prologue list. The four bytes immediately before all 123 are identical:
+
+```
+55 48 89 e5     push rbp; mov rbp, rsp
+41 57 41 56     push r15; push r14      <- seeded as a separate function
+```
+
+and **120 of the 123 (97.6%) have a real function start exactly four bytes earlier**. The seeded
+prologue is firing on the second instruction pair of a function whose first pair is itself a
+prologue on the same list.
+
+### The counterfactual the pattern registry asks for
+
+Before changing a seeded prologue, the registry requires measuring seeded against scoring-only
+directly. Counting the starts that **only** the seed found — no call reference, no symbol, not from
+gap search, not an exception record or stub — over 18 sampled 64-bit binaries:
+
+| corpus | seed-only true positives | seed-only false positives |
+|---|---|---|
+| Rust linux-gnu-x64 (4 cells) | 15 | 400 |
+| Go darwin amd64/arm64 (4 cells) | 0 | 0 |
+| ByteWeight msvc10-64 (6 cells) | 0 | 0 |
+| ByteWeight msvc10-64 dumped (4 cells) | 0 | 0 |
+| **total** | **15** | **400** |
+
+Twenty-six false positives per uniquely recovered function — and **nothing at all on the MSVC
+corpora**, so the seed's value is not coming from the corpus it was presumably added for.
+
+**Removing the seed outright is nevertheless rejected**: those 15 are true positives nothing else
+finds, and a recall drop on any corpus is the reject criterion regardless of what it does to
+precision. The narrower rule — *do not seed a prologue match that begins exactly where another
+seeded prologue match ends* — drops 33 to 123 false positives per Rust ELF cell and **zero true
+positives**, and is inert on all eight mingw PE cells.

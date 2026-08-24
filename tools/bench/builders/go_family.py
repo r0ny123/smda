@@ -184,6 +184,7 @@ CGO_PROGRAM = """package main
 
 /*
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int native_len(const char *value) {
