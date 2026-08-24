@@ -698,36 +698,52 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                     self.disassembly.data_map.add(stub_addr + 7 + offset)
 
     def locateExceptionHandlerCandidates(self):
-        # 64bit only - if we have a .pdata section describing exception handlers, we extract entries of guaranteed function starts from it.
+        # 64bit only - a PE x64 exception table enumerates guaranteed function starts.
         if self.disassembly.binary_info.bitness == 64:
             self.pdata_start_addresses = set()
             self.pdata_end_addresses = set()
             record_pdata_ends = self.config.USE_PE_X64_PDATA_ENDS
             base_addr = self.disassembly.binary_info.base_addr
+            # the image's own directory is where the table's address is declared; the
+            # section name is only the convention MSVC happens to follow, and a
+            # ReadyToRun image puts the same table in .data
+            table = self.disassembly.binary_info.getExceptionDirectory()
             has_sections = False
             for section_info in self.disassembly.binary_info.getSections():
                 has_sections = True
                 section_name, section_va_start, section_va_end = section_info
-                if section_name == ".pdata":
-                    rva_start = section_va_start - self.disassembly.binary_info.base_addr
-                    rva_end = section_va_end - self.disassembly.binary_info.base_addr
-                    # .pdata entries are 12 bytes long (3 DWORDs): BeginAddress, EndAddress, UnwindInfoAddress
-                    for offset in range(rva_start, rva_end - 11, 12):
-                        packed_entry = self.disassembly.getRawBytes(offset, 12)
-                        if len(packed_entry) < 12:
-                            break
-                        rva_function_candidate, _rva_function_end, rva_unwind_info = struct.unpack("<III", packed_entry)
-                        if rva_function_candidate == 0:
-                            break
-                        self._admitExceptionRecord(
-                            base_addr,
-                            rva_function_candidate,
-                            _rva_function_end,
-                            rva_unwind_info,
-                            record_pdata_ends,
-                        )
-            if not has_sections:
+                if table is None and section_name == ".pdata":
+                    table = (section_va_start, section_va_end)
+            if table is not None:
+                self._readExceptionTable(base_addr, table[0], table[1], record_pdata_ends)
+            elif not has_sections:
                 self._carveExceptionRecords(base_addr, record_pdata_ends)
+
+    def _readExceptionTable(self, base_addr, va_start, va_end, record_pdata_ends):
+        """Admit every RUNTIME_FUNCTION in a declared exception table.
+
+        The declared size is a 32-bit field an image is free to overstate, and a
+        section extent is rounded up past what a truncated dump holds; the walk
+        stops at the first read that comes back short, so neither can send it
+        past the bytes that exist.
+        """
+        rva_start = va_start - base_addr
+        rva_end = va_end - base_addr
+        # entries are 12 bytes (3 DWORDs): BeginAddress, EndAddress, UnwindInfoAddress
+        for offset in range(rva_start, rva_end - 11, 12):
+            packed_entry = self.disassembly.getRawBytes(offset, 12)
+            if len(packed_entry) < 12:
+                break
+            rva_function_candidate, rva_function_end, rva_unwind_info = struct.unpack("<III", packed_entry)
+            if rva_function_candidate == 0:
+                break
+            self._admitExceptionRecord(
+                base_addr,
+                rva_function_candidate,
+                rva_function_end,
+                rva_unwind_info,
+                record_pdata_ends,
+            )
 
     def _admitExceptionRecord(self, base_addr, rva_function_candidate, rva_function_end, rva_unwind_info, ends):
         if self._isChainedUnwindInfo(rva_unwind_info):
