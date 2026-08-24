@@ -91,6 +91,11 @@ repository. A fixture that carries the load command with nothing in it is skippe
 manifest — an empty truth set would score every detection as a false positive and read as a
 catastrophic result rather than as missing truth.
 
+**Do not measure this corpus with `SmdaConfig.USE_MACHO_FUNCTION_STARTS` enabled.** That option
+makes SMDA read `LC_FUNCTION_STARTS` as a candidate source — the same table this corpus uses as
+ground truth — so the engine would be scored against the answer key it was handed. It is off by
+default and every figure recorded here is measured with the default.
+
 Each family writes a `manifest.json` recording every cell it attempted, including the failures and
 why — a matrix that quietly shrank must not read like one that passed.
 

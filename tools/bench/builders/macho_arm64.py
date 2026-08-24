@@ -12,6 +12,11 @@ different container and a different kind of program.
 
 The decoded binaries are written under the ground-truth root, never back into the
 repository.
+
+One caution belongs with this corpus: SMDA can be told to read the same table, through
+`SmdaConfig.USE_MACHO_FUNCTION_STARTS`, which is off by default. Measured with it on,
+this corpus scores the engine against the answer key it was handed, and the result means
+nothing. Every figure recorded from it here is measured with the default.
 """
 
 from __future__ import annotations

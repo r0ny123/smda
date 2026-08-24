@@ -862,3 +862,277 @@ quantify before landing it is how often a mid-function `bl` is followed by that 
 is a counterfactual the Go arm64 and Mach-O corpora can both answer.
 
 Recorded as the next AArch64 item; not implemented yet.
+
+---
+
+## 2026-08-24 — the no-return call boundary, measured
+
+The sequence from the previous entry, turned into a predicate and measured before being wired in.
+
+**Counterfactual first.** Over every `bl` in every ARM64 Mach-O sample, how often does the
+fall-through address open a frame — `sub sp, sp, #imm` followed within three instructions by
+`stp x29, x30, [sp, #imm]` — and when it does, is that address a declared function start?
+
+| population | `bl` instructions | predicate fires | declared start | not declared |
+|---|---|---|---|---|
+| ARM64 Mach-O, 7 of 11 samples | 14,273 | 47 | **47** | **0** |
+| Go arm64, 12 cells | 55,964 | 0 | 0 | 0 |
+
+Forty-seven fires, forty-seven declared starts, no misfires. The Go population is the inertness
+control rather than a second confirmation: Go's callees return and its prologue is the pre-indexed
+form, so the predicate never fires there and cannot cost anything. The confirming samples span both
+upstreams the corpus draws on — Kitty, LockBit and RustyPages from one, frostyferret, gimmick,
+interception and poseidonstealer from the other.
+
+**Why a two-word test and not a one-word one.** `sub sp, sp, #imm` alone is exactly as common inside
+a function as at its head, which is why `is_function_prologue` refuses it and why the intel side
+scores `sub rsp, imm8` but never seeds on it. The frame record stored into the frame that allocation
+just made is what removes the ambiguity: nothing mid-function re-saves the incoming link register
+into a frame it has only now created.
+
+**Result**, ARM64 Mach-O corpus, n=11, filter `all`, arithmetic macro mean:
+
+| | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| before | 93.986 | 95.616 | 94.381 | 2,484 | 263 | 269 |
+| after | 94.008 | **96.345** | 94.778 | **2,512** | **263** | **241** |
+
+Twenty-eight true positives gained and **not one false positive added** — the false-positive count is
+identical, which is the control that the rule fires only where it was measured to.
+
+On `osx.frostyferret` alone the misses go 30 to 15, and the fifteen recovered are exactly the run
+`0x100008950` through `0x100008f08` that `0x100008900` and `0x100008cac` had swallowed. Those fifteen
+addresses are pinned by a test against that fixture, which is in the repository already.
+
+### The corpus can be made circular, and must not be
+
+SMDA can already be told to read `LC_FUNCTION_STARTS` as a candidate source, through
+`SmdaConfig.USE_MACHO_FUNCTION_STARTS`, which is off by default. That is the same table this corpus
+uses as ground truth. Measured with the option on, the corpus scores the engine against the answer
+key it was handed and the number means nothing.
+
+Every figure recorded from this corpus is measured with the default, and the builder and the harness
+README both say so. Worth stating rather than assuming, because the option exists, is one line to
+flip, and would turn a 96.3 into a much better-looking figure that measured nothing.
+
+It also gives the boundary rule an independent check. The bundled fixture test that pins this image
+compares the primary pass against the primary pass plus the table:
+
+| | functions | of which the table declares |
+|---|---|---|
+| before, table pass off | 246 | 117 |
+| after, table pass off | **261** | **132** |
+| before and after, table pass on | 275 | 146 |
+
+The total with the table pass on is unchanged. The primary pass now discovers by itself fifteen of
+the entries the table was compensating for, which is the same fifteen the boundary rule cuts — two
+different routes to the same addresses, agreeing. The frozen baseline moves from 246 to 261 and 117
+to 132 as a deliberate consequence, recorded in the test itself.
+
+---
+
+## 2026-08-24 — the interior prologue rule, measured
+
+Applied and measured against the same tree without it. Filter `all`, arithmetic macro mean.
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP | ΔFN |
+|---|---|---|---|---|---|---|---|
+| Built Rust (gnu targets) | 24 | **+3.134** | +0.000 | **+1.992** | 0 | **−790** | 0 |
+| Built .NET (CIL + NativeAOT) | 4 | +0.240 | +0.000 | +0.156 | 0 | −99 | 0 |
+| Built Go (pclntab truth) | 45 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ARM64 Mach-O | 11 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao byteweight msvc10-32 | 68 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao byteweight msvc10-64 | 68 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-32-d | 56 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-64-d | 56 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Plohmann malpedia itw | 57 | +0.003 | +0.000 | +0.002 | 0 | −1 | 0 |
+| Built C/C++ (gcc, clang, mingw) | 260 | +0.034 | +0.000 | +0.017 | 0 | −22 | 0 |
+
+912 false positives removed across ten corpora and **not one true positive anywhere**, which is what
+the counterfactual predicted: the seed contributes 15 unique true positives and 400 unique false
+positives on the Rust set, and the rule refuses only matches that begin exactly where an earlier
+seeded match ends. Rust goes from the lowest precision measured here to 78.951.
+
+The C/C++ corpus barely moves — 22 false positives over 260 binaries — even though it is built by the
+same clang that produces the Rust adjacency. That is worth stating rather than smoothing over: the
+pattern needs the two prologues to land back to back, which Rust's code generation produces far more
+often than C or C++ does.
+
+The rule cannot fire on the MSVC corpora at all — `push r15; push r14` after `push rbp; mov rbp, rsp`
+is a clang and gcc idiom — and the single malpedia false positive it removes is the one place the
+frozen sets touch it. Go and the ARM64 corpus are untouched because neither compiles through this
+path in a way that produces the adjacency.
+
+Thirty bundled fixtures produce byte-identical function sets either side, which is the regression
+control; the positive control is a synthetic buffer where the interior match is seeded without the
+rule and not with it, while a standalone match of the same pattern is seeded in both.
+
+---
+
+## 2026-08-24 — the origin evaluation's table, re-measured
+
+Six of the seven rows now carry a measured Ghidra column beside the recorded one. Geometric mean per
+optimization level for the split rows, arithmetic mean for the rest, exactly as the origin evaluation
+aggregates them.
+
+| row | opt | n | ghidra 9.1.2 (recorded) | ghidra 12.1.3 (measured) | smda 1.2.5 (recorded) | smda 4.4.7 (measured) |
+|---|---|---|---|---|---|---|
+| ByteWeight msvc10-32 | O1 | 17 | 0.804 / 0.952 | 0.817 / 0.953 | 0.992 / 0.935 | 0.994 / 0.938 |
+| ByteWeight msvc10-32 | O2 | 17 | 0.809 / 0.950 | 0.822 / 0.951 | 0.992 / 0.927 | 0.994 / 0.932 |
+| ByteWeight msvc10-64 | O1 | 17 | 0.675 / 0.999 | incomplete | 0.975 / 0.983 | 0.998 / 0.993 |
+| ByteWeight msvc10-64 | O2 | 17 | 0.703 / 0.999 | 0.809 / 0.999 | 0.972 / 0.981 | 0.998 / 0.993 |
+| ByteWeight* msvc10-32 | – | 56 | 0.775 / 0.953 | 0.777 / 0.953 | 0.967 / 0.910 | 0.975 / 0.912 |
+| ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
+
+TPR / PPV. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the analysis
+budget; it is marked and named rather than printed, for the reasons recorded above.
+
+**This is the harness validating itself against a second engine.** Ghidra 12.1.3 lands within 0.002
+to 0.013 of the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different
+tool, a different decade, and the same metric implementation reproducing the published numbers. The
+earlier validation showed SMDA 4.4.1 reproducing a recorded SMDA measurement; this shows the metric
+is not tuned to one engine's output shape.
+
+It also says something about the two tools. Ghidra has moved very little on these corpora in five
+years — the largest change on a comparable cell is +0.013 recall. SMDA has moved a great deal, and
+almost all of it on the hardest row: **the dumped 64-bit set goes from 0.932 recall to 0.998**, +6.6
+points, where the unpacked sets were already near their ceiling.
+
+---
+
+## 2026-08-24 — the C/C++ matrix, measured
+
+260 binaries, ten programs, four toolchains, seven build variants, 213,441 truth functions including
+10,090 PLT entries. Filter `all`, arithmetic macro mean, at the commit that lands the interior
+prologue rule:
+
+| corpus | n | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 202,669 | 26,702 | 10,772 |
+
+**Recall is 95.523 here against 97.872 on the 32-bit ByteWeight set and 99.838 on the 64-bit one.**
+That is the closest comparison available — the same kind of program, the same metric, a different set
+of compilers — and it says the recall the published figures show is a property of the corpus as much
+as of the disassembler. ByteWeight is one compiler at four optimization levels; this is three
+compilers at seven build configurations, and it costs two to four points of recall.
+
+Not yet broken down by toolchain or variant. That breakdown is the obvious next question and the
+result files hold everything needed for it.
+
+---
+
+## 2026-08-24 — the biggest precision mechanism in the C/C++ corpus: `endbr64` is not a function start
+
+The worst cell in the 260-binary matrix is `googletest_gcc-x64_Os`: 1,194 truth functions, **2,284
+detected**, PPV 52.06 at TPR 99.58. Nearly twice as many functions reported as exist.
+
+Truth first, as always. `.eh_frame` in the same binary declares 842 ranges against the 843 the truth
+holds in `.text`, and **none of the 1,095 false positives is FDE-declared**. The truth is right and
+the over-detection is real.
+
+Then the histogram. Of those 1,095 false positives:
+
+| property | count |
+|---|---|
+| first instruction is `endbr64` | **1,085** |
+| exactly two instructions long | 588 |
+| ≥64 bytes past the nearest preceding declared start | 1,077 |
+| carrying any symbol of any kind | 0 |
+
+`endbr64` is a CET landing pad, and `locatePrologueCandidates` seeds every one it finds. But a
+landing pad marks *every indirect-branch target*, not every function: under `-fcf-protection` gcc
+emits one at each jump-table destination, so a `switch` in a hot function produces a dozen of them
+inside a single function body. Seeding them all books a function at each one.
+
+**Corpus-wide, by byte scan alone** — every `endbr64` in `.text` across the 140 ELF cells, against
+what the truth declares:
+
+| | count |
+|---|---|
+| `endbr64` occurrences in `.text` | 69,971 |
+| at a declared function start | 54,985 |
+| **not at one** | **14,986 (21.4%)** |
+
+Split by toolchain, 12,564 of the 14,986 are gcc's and 2,422 are clang's — gcc marks jump-table
+targets far more liberally. The whole C/C++ corpus holds 26,702 false positives, so this one pattern
+bounds more than half of them.
+
+**Proposed rule, not yet measured:** seed an `endbr64` only where the bytes before it end a function
+or pad between functions — a `ret`, an unconditional `jmp`, `int3` padding, or `nop` padding. A
+jump-table landing pad is preceded by ordinary instruction bytes and would be refused. This is the
+same shape of argument as the interior-prologue rule that landed above: the pattern is real, its
+*position* is what disqualifies it.
+
+**Ceiling:** up to 14,986 false positives on the C/C++ corpus, worth roughly +5 to +7 PPV there, with
+recall untouched if the rule only ever refuses. The counterfactual to run before implementing is the
+one the prologue rule got: how many of those 14,986 does the proposed predicate refuse, and how many
+declared starts would it refuse with them.
+
+### Measured worse: every byte-level test for an `endbr64`'s role
+
+The proposed rule was to seed an `endbr64` only where the bytes before it end a function or pad
+between functions. Cross-tabulated against the truth over all 140 ELF cells — how many spurious pads
+each variant refuses, against how many declared function starts it would refuse with them:
+
+| variant | refuses spurious | costs declared | ratio |
+|---|---|---|---|
+| padding only (`int3`, `nop` forms) | 13,689 | 15,737 | 0.87 |
+| 16-byte aligned | 13,319 | 14,149 | 0.94 |
+| 16-aligned **and** (`ret` or padding) | 14,027 | 15,727 | 0.89 |
+| `ret` or padding | 13,009 | 3,418 | 3.81 |
+| 16-aligned **or** (`ret` or padding) | 12,301 | **1,840** | 6.69 |
+
+The best variant still refuses 1,840 real function starts, and a recall drop is the reject criterion.
+**All of them rejected.**
+
+The reason is structural, not a matter of tuning the byte set. A jump-table case body commonly ends
+in `jmp <shared epilogue>` and the next case's landing pad follows it, so "preceded by a terminator"
+describes an interior pad as accurately as it describes a function entry. In the other direction, a
+function whose predecessor ends in a call to something that does not return has no terminator before
+it at all — the same shape the AArch64 boundary rule was written for. The two populations are not
+separable by the bytes in front of them.
+
+What does separate them is what the address *is used as*: a landing pad is the target of an indirect
+branch from inside a function, and a function entry is the target of a call. SMDA computes jump
+tables during analysis and knows their targets. So the repair belongs after analysis, as a filter on
+candidates the jump-table pass has already claimed, not before it as a filter on bytes — which is the
+same lesson as the interior-prologue rule from the other side: there, position among already-admitted
+candidates was the discriminator; here, role among already-resolved branch targets has to be.
+
+### Measured worse: refusing a reference-less `endbr64`
+
+If the bytes in front cannot decide it, perhaps the references into it can. On the worst cell the
+split looked decisive:
+
+| | count | with a code reference into them |
+|---|---|---|
+| false positives | 1,095 | **0 (0.0%)** |
+| true positives | 1,189 | 689 (57.9%) |
+
+Not one of the 1,095 spurious pads is referenced by any code the analysis recovered, and more than
+half the real functions are. The rule that suggests itself: refuse a candidate that begins with
+`endbr64` and has no reference into it.
+
+Measured over four cells chosen to span toolchains and programs:
+
+| cell | false positives | would drop | true positives | would drop |
+|---|---|---|---|---|
+| googletest_gcc-x64_Os | 1,095 | 1,085 | 1,189 | **498** |
+| sqlite3_gcc-x64_O2 | 9 | 0 | 1,891 | **653** |
+| lua_clang-x64_O2 | 5 | 0 | 704 | 4 |
+| brotli_gcc-x64_O1 | 26 | 0 | 332 | 59 |
+| **total** | 1,135 | **1,085** | 4,116 | **1,214** |
+
+It removes fewer false positives than it removes real functions. **Rejected.**
+
+The reason the first table was so persuasive and so misleading: googletest is a static test framework
+linked without any tests, so most of its code is never called from inside the binary. A real function
+there is as reference-less as a spurious pad, and the rule cannot tell them apart. sqlite3 makes the
+same point louder — 653 real functions with no internal caller, and no false positives to trade for
+them.
+
+Two rejected repairs on the same finding, from opposite directions, both because the discriminator
+was assumed rather than measured. What is left is the one thing neither test looks at: whether the
+address is the target of an indirect branch the jump-table pass resolved. SMDA computes that during
+analysis and does not surface it in a report, so confirming it needs instrumentation rather than
+another counterfactual over existing output.

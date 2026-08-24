@@ -25,9 +25,9 @@ Five corpora came with it, none of which existed for this project before:
 
 | corpus | cells | truth functions | ground truth |
 |---|---|---|---|
-| C/C++ | 260 | 203,351 | symbol table of the unstripped link |
+| C/C++ | 260 | 213,441 | symbol table of the unstripped link, plus PLT entries |
 | Go | 45 | 162,621 | `go tool nm` over the unstripped build |
-| Rust | 24 | 33,817 | symbol table of the unstripped link |
+| Rust | 24 | 33,817 | symbol table of the unstripped link, plus PLT entries |
 | .NET | 4 | 7,441 | assembly metadata; symbols for the native image |
 | ARM64 Mach-O | 11 | 2,753 | `LC_FUNCTION_STARTS`, plus the stub entries the image declares |
 
@@ -54,7 +54,38 @@ data. Three of its conclusions are load-bearing for everything below:
   labelling study found 249 functions in `client7z` that are referenced by other code and missing
   from the PDB-derived truth. `client7z` remains among the lowest-scoring binaries today.
 
-## 3. Where today's SMDA stands
+## 3. The replication, and what it validates
+
+Six of the origin evaluation's seven rows now carry a measured Ghidra column beside the recorded one,
+aggregated the way that evaluation aggregates them — geometric mean per optimization level for rows
+whose binaries carry an `O0`-`O3` label, arithmetic mean for the rest. TPR / PPV:
+
+| row | opt | n | ghidra 9.1.2 (recorded) | ghidra 12.1.3 (measured) | smda 1.2.5 (recorded) | smda 4.4.7 (measured) |
+|---|---|---|---|---|---|---|
+| ByteWeight msvc10-32 | O1 | 17 | 0.804 / 0.952 | 0.817 / 0.953 | 0.992 / 0.935 | 0.994 / 0.938 |
+| ByteWeight msvc10-32 | O2 | 17 | 0.809 / 0.950 | 0.822 / 0.951 | 0.992 / 0.927 | 0.994 / 0.932 |
+| ByteWeight msvc10-64 | O1 | 17 | 0.675 / 0.999 | incomplete | 0.975 / 0.983 | 0.998 / 0.993 |
+| ByteWeight msvc10-64 | O2 | 17 | 0.703 / 0.999 | 0.809 / 0.999 | 0.972 / 0.981 | 0.998 / 0.993 |
+| ByteWeight* msvc10-32 | – | 56 | 0.775 / 0.953 | 0.777 / 0.953 | 0.967 / 0.910 | 0.975 / 0.912 |
+| ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
+
+The IDA and nucleus columns are in the tool's own output and omitted here; they are the origin
+evaluation's figures, labelled `(paper)` in the table itself because no licence is available to
+re-run them. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the
+analysis budget, and is marked and named rather than printed.
+
+**This validates the harness against a second engine.** Ghidra 12.1.3 lands within 0.002 to 0.013 of
+the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different tool, a
+different decade, the same metric implementation reproducing published numbers. The earlier check
+showed SMDA 4.4.1 reproducing a recorded SMDA measurement; this one shows the metric is not tuned to
+one engine's output shape.
+
+It also says something about the two tools. Ghidra has moved very little on these corpora in five
+years; the largest change on a comparable cell is +0.013 recall. SMDA has moved a great deal, and
+almost all of it on the hardest row — **the dumped 64-bit set goes from 0.932 recall to 0.998**,
+where the unpacked sets were already near their ceiling.
+
+## 4. Where today's SMDA stands
 
 Filter `all`, arithmetic macro mean, commit `802e627` (SMDA 4.4.7), against SMDA 4.4.1 measured
 through the same harness:
@@ -77,7 +108,7 @@ in the 32-bit ByteWeight set is paired with a ground-truth file describing a dif
 1.374 macro F1 there and 1.662 on its dumped variant, and 1.4 points of *recall*. The research log
 records the evidence; the harness now reports it before printing any metric.
 
-## 4. Fix landed: a container header in the buffer outranks the byte probes
+## 5. Fix landed: a container header in the buffer outranks the byte probes
 
 **The class.** Two places decided what a buffer's bytes *are* by counting byte patterns, while the
 buffer's own container header stated the answer outright. `BitnessAnalyzer` reads the share of
@@ -121,7 +152,7 @@ header exists — and exactly three of the 57 malware dumps moved. Precision and
 metadata is addressed by file offset, which a mapped image no longer has, so naming `cil` from the
 header would lose the sample. That carve-out is pinned against a real .NET fixture.
 
-## 5. Measured worse
+## 6. Measured worse
 
 ### A second REX-prefix statistic for the headerless bitness cases
 
@@ -137,7 +168,46 @@ its 64-bit range starts at 0.089, so the two overlap across a wide band that con
 p10 0.908). Any conjunction strong enough to reject the failing 32-bit samples also rejects real
 64-bit ones, and misreading a 64-bit image as 32-bit is the worse error. **Rejected.**
 
-## 6. Fix landed: the exception table's address is declared, not conventional
+### Every byte-level test for what an `endbr64` marks
+
+`endbr64` is a CET landing pad, and the prologue scan seeds every one. It marks every indirect-branch
+target rather than every function: 14,986 of the 69,971 in the C/C++ corpus' `.text` sections — 21.4%
+— are not at a declared function start, and on the worst cell 1,085 of 1,095 false positives begin
+with one.
+
+The proposed rule was to seed one only where the bytes before it end a function or pad between
+functions. Cross-tabulated over all 140 ELF cells: how many spurious pads each variant refuses,
+against how many declared starts it refuses with them.
+
+| variant | refuses spurious | costs declared | ratio |
+|---|---|---|---|
+| padding only (`int3`, `nop` forms) | 13,689 | 15,737 | 0.87 |
+| 16-byte aligned | 13,319 | 14,149 | 0.94 |
+| 16-aligned **and** (`ret` or padding) | 14,027 | 15,727 | 0.89 |
+| `ret` or padding | 13,009 | 3,418 | 3.81 |
+| 16-aligned **or** (`ret` or padding) | 12,301 | 1,840 | 6.69 |
+
+The best still refuses 1,840 real function starts. **Rejected**, all five. The reason is structural: a
+jump-table case body commonly ends in `jmp <shared epilogue>` with the next case's pad after it, so a
+preceding terminator describes an interior pad as accurately as a function entry; and a function that
+follows a call which does not return has no terminator before it at all. The two are not separable by
+the bytes in front of them.
+
+### Refusing a reference-less `endbr64`
+
+If the bytes cannot decide it, perhaps the references can. On the worst cell the split looked
+decisive: **none** of its 1,095 false positives is referenced by any recovered code, against 57.9% of
+its true positives. Measured over four cells spanning toolchains and programs, the rule removes 1,085
+false positives and **1,214 true positives** — more real functions than spurious ones. **Rejected.**
+
+googletest is a static test framework linked without tests, so most of its code is never called from
+inside the binary and a real function there is as reference-less as a spurious pad. sqlite3 makes the
+point louder: 653 real functions with no internal caller and no false positives to trade for them.
+
+Two rejected repairs on the same finding, from opposite directions, both because the discriminator
+was assumed rather than measured. Section 11 records where it has to come from instead.
+
+## 7. Fix landed: the exception table's address is declared, not conventional
 
 **The defect.** `locateExceptionHandlerCandidates` found the PE x64 exception table by looking for
 a section *named* `.pdata`. The table's address is declared in the image's own exception data
@@ -168,7 +238,82 @@ declares, intel backend:
 Recall on declared native functions goes from two thirds to all of them. The single false positive
 is one additional function found in a gap, which is the intended over-detection.
 
-## 7. What the harness itself contributes
+## 8. Fix landed: a call that does not return is a function boundary
+
+**The defect.** On AArch64 a callee that never returns leaves its caller with no `ret`, so decoding
+runs straight out of one function and into the next. The backend has a rule for exactly that shape —
+after a `bl`, ask whether the fall-through address starts a function — and it accepts only three
+answers: the address is already a candidate, or NOP padding was skipped and what follows is a
+candidate or is 16-aligned. With no padding and nothing having seeded the next entry, all three
+decline and the two functions merge. On one 274-function image that cost fifteen functions in two
+runs.
+
+**Why the existing one-word test cannot be widened.** The word at the merge point is
+`sub sp, sp, #imm`, and `is_function_prologue` deliberately does not recognise it: a bare stack
+allocation is as common inside a function as at its head, the same reason the intel side scores
+`sub rsp, imm8` but never seeds on it.
+
+**The rule.** A stack allocation *followed within three instructions by the frame record*
+`stp x29, x30, [sp, #imm]` — the frame pointer and link register stored into the frame that
+allocation just made. Nothing mid-function re-saves the incoming link register into a frame it has
+only now created. Read as two words instead of one the shape is not ambiguous, and it is consulted
+only at a `bl` fall-through, never scanned across an image.
+
+**Counterfactual, before the change was wired in:**
+
+| population | `bl` instructions | predicate fires | declared start | not declared |
+|---|---|---|---|---|
+| ARM64 Mach-O, 11 samples | 14,273 | 47 | **47** | **0** |
+| Go arm64, 12 cells | 55,964 | 0 | 0 | 0 |
+
+Go is the inertness control, not a second confirmation: its callees return and its prologue is the
+pre-indexed form, so the rule cannot fire there and cannot cost anything.
+
+**Result**, ARM64 Mach-O corpus, n=11, filter `all`, arithmetic macro mean:
+
+| | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| before | 93.986 | 95.616 | 94.381 | 2,484 | 263 | 269 |
+| after | 94.008 | **96.345** | 94.778 | **2,512** | **263** | **241** |
+
+Twenty-eight functions recovered and **not one false positive added** — the false-positive count is
+identical either side, which is the control that the rule fires only where it was measured to.
+
+## 9. Fix landed: a prologue that opens where another prologue ends
+
+**The defect.** A function's opening instructions are its prologue, so the address just past one is
+inside that function's body. The whole-image prologue scan did not check, and one seeded pattern
+lands there constantly: clang opens a frame with `push rbp; mov rbp, rsp` and follows it with the
+callee-saved run `push r15; push r14`, which is on the seeded list too. Matched four bytes in, it
+books the body of a function the scan had already found.
+
+**Evidence.** Of 150 false positives on the Rust corpus that no reference points at and that arrived
+as initial candidates, **123 begin `41 57`**, all 123 are preceded by `55 48 89 e5`, and **120 of the
+123 (97.6%)** have a real function start exactly four bytes earlier.
+
+**Why not remove the seed.** A counterfactual over 18 binaries attributes 15 unique true positives to
+it. A recall drop is the reject criterion, so the repair has to keep the seed and refuse only the
+matches that are provably interior — and only when the earlier address is already a candidate, so a
+byte coincidence cannot trigger it. It generalises the hotpatch adjustment beside it, which refuses a
+bare `push ebp; mov ebp, esp` two bytes into a `mov edi, edi` pad on the same reasoning. No function
+consists solely of its own prologue, which is what makes the rule safe.
+
+**Result**, filter `all`, arithmetic macro mean, against the same tree without it:
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|---|
+| Rust (gnu targets) | 24 | **+3.134** | +0.000 | **+1.992** | 0 | **−790** |
+| .NET (CIL + NativeAOT) | 4 | +0.240 | +0.000 | +0.156 | 0 | −99 |
+| C/C++ (gcc, clang, mingw) | 260 | +0.034 | +0.000 | +0.017 | 0 | −22 |
+| malware dumps | 57 | +0.003 | +0.000 | +0.002 | 0 | −1 |
+| Go, ARM64 Mach-O, and all four ByteWeight sets | 45/11/68/68/56/56 | 0 | 0 | 0 | 0 | 0 |
+
+912 false positives removed across ten corpora and **not one true positive anywhere**. Rust goes from
+the lowest precision measured here to 78.951, and the C/C++ corpus barely moves despite being built
+by the same clang — the pattern needs two prologues back to back, which Rust's code generation
+produces far more often than C or C++ does.
+
+## 10. What the harness itself contributes
 
 Three properties were added because a measurement without them has already misled this project:
 
@@ -191,7 +336,7 @@ Three properties were added because a measurement without them has already misle
 if recall fell on any config, so the reject criterion is enforced by the tool rather than by
 remembering to look.
 
-## 8. Ranked remaining agenda, with ceilings
+## 11. Ranked remaining agenda, with ceilings
 
 Each item names what it would be worth and on which corpus, so nothing here is ranked on
 plausibility alone. The first two have a mechanism established and a candidate change measured
@@ -199,50 +344,66 @@ against it; the rest have a measurement and no fix yet.
 
 ### 1. AArch64 recall on code with no symbol oracle
 
-Micro recall **90.229** on eleven real ARM64 Mach-O binaries, against 99.838 on the 64-bit ByteWeight
-set — the largest architecture gap measured anywhere in this work. It is invisible on the Go family,
-where the pclntab names every function and recall is essentially perfect, so it took a corpus whose
-truth comes from a linker to see it: `LC_FUNCTION_STARTS` names the functions whether or not a symbol
-table survives.
+Micro recall **91.246** on eleven real ARM64 Mach-O binaries, against 99.745 on the 64-bit ByteWeight
+set — still the largest architecture gap measured anywhere in this work after the boundary rule in
+section 8 closed a point of it. It is invisible on the Go family, where the pclntab names every
+function and recall is essentially perfect, so it took a corpus whose truth comes from a linker to
+see it at all.
 
-The gap is a function of size. Every sample with fewer than 90 truth functions is recovered
-completely; every larger one is not — 157 missed of 1,087, 55 of 556, 30 of 274, 19 of 481.
+The gap is a function of size: every sample with fewer than 90 truth functions is recovered
+completely, and every larger one is not.
 
-Classifying every miss on one binary splits them cleanly. Sixteen of thirty are **swallowed by the
-function before them**: `0x100008900` absorbs eight declared functions spaced 0x50 apart, and the
-merge point is a `bl` to a callee that does not return, so the caller has no `ret` and decoding runs
-on into the next function. The AArch64 backend already has a rule for that shape — it checks for a
-`bl` as the previous instruction and asks for a fall-through boundary — and its predicate declines
-here, which makes this a rule to tighten rather than a feature to add. Eight more are runs of
-**one-instruction `b` veneers** that are never analysed at all, and the split within a run is not
-random: of twelve adjacent declared veneers, the eight branching to two particular targets are
-missed and the four branching elsewhere are found.
+Classifying every miss on one binary split them cleanly, and half of them are now fixed. Sixteen of
+thirty were **swallowed by the function before them** — that is what section 8 addresses, and fifteen
+of those sixteen are recovered. Eight more are runs of **one-instruction `b` veneers** that are never
+analysed at all, and the split within a run is not random: of twelve adjacent declared veneers, the
+eight branching to two particular targets are missed and the four branching elsewhere are found.
+Nothing yet explains what distinguishes those two targets, and that is the next thing to run down.
 
-**Ceiling:** closing the merges alone is roughly half the gap, and the whole gap is +9.6 micro recall
-on this corpus, which would put AArch64 within a point of intel. How much one change reaches is the
-next thing to measure, not to assert.
+**Ceiling:** the veneers are 8 of the remaining 15 misses on that binary; the whole remaining gap is
++8.5 micro recall on this corpus, which would put AArch64 within a point and a half of intel.
 
-### 2. Rust/ELF: a seeded prologue four bytes inside a function
+### 2. `endbr64` is seeded as a function start and marks every indirect-branch target
 
-Rust is the worst-scoring family measured here — PPV **75.817** on n=24 with 33,817 truth functions,
-against 92.0 on the 32-bit ByteWeight set. It is not a truth defect: the same `.eh_frame` cross-check
-that exonerated NativeAOT found the Rust truth complete.
+The worst cell in the 260-binary C/C++ matrix reports 2,284 functions where 1,194 exist — PPV 52.06
+at TPR 99.58 — and **1,085 of its 1,095 false positives begin with `endbr64`**. None of them carries
+a symbol and none is declared by the binary's own `.eh_frame`, which corroborates the truth to within
+one range, so the over-detection is real.
 
-The mechanism is a single byte pattern. Of 150 false positives that no reference points at and that
-came in as initial candidates, **123 begin `41 57`** (`push r15`). All 123 are preceded by
-`55 48 89 e5` (`push rbp; mov rbp, rsp`), and **120 of 123 (97.6%)** have a real function start
-exactly four bytes earlier: the prologue scanner matched the second half of a frame setup it had
-already matched the first half of.
+`endbr64` is a CET landing pad and the prologue scan seeds every one it finds. A landing pad marks
+every indirect-branch target, not every function: under `-fcf-protection` gcc emits one at each
+jump-table destination, so a `switch` produces a dozen of them inside a single function body.
 
-Removing the `41 57` seed outright is rejected — a counterfactual over 18 binaries attributes 15
-unique true positives to it, and recall may not fall. The narrower rule, *do not seed a prologue
-match that begins exactly where another seeded prologue match ends*, drops **33 to 123 false
-positives per Rust ELF cell and zero true positives**, and is inert on all eight mingw PE cells and
-on both MSVC corpora, where the seed contributes neither a true nor a false positive.
-**Ceiling:** the 400 unique false positives the seed contributes across the Rust set, worth roughly
-+1.2 PPV on the family; the change itself is scoped narrower than that and is next to land.
+A byte scan across all 140 ELF cells finds **69,971 `endbr64` occurrences in `.text`, of which 14,986
+(21.4%) are not at a declared function start** — 12,564 from gcc and 2,422 from clang. The corpus
+holds 26,702 false positives in total, so this one pattern bounds more than half of them.
 
-### 3. Go/AArch64: a tailcall path the shared engine gates and this backend does not
+The obvious repair — seed an `endbr64` only where the bytes before it end a function or pad between
+functions — was measured and **rejected**; section 6 records all five variants tried and what each
+cost. The best of them refuses 12,301 spurious pads and 1,840 real function starts with them, and a
+recall drop is the reject criterion.
+
+The bytes in front of the pad cannot decide this, structurally rather than by tuning: a jump-table
+case body commonly ends in `jmp <shared epilogue>` with the next case's pad after it, so a preceding
+terminator describes both roles, and a function following a call that does not return has no
+terminator before it at all. What separates them is what the address is *used as* — a landing pad is
+the target of an indirect branch from inside a function, a function entry is the target of a call —
+and SMDA resolves jump tables during analysis. The repair therefore belongs after analysis, as a
+filter on candidates the jump-table pass has claimed, not before it as a filter on bytes.
+**Ceiling:** the 14,986, worth roughly +5 to +7 PPV on the C/C++ corpus, minus however many of them
+the jump-table pass does not in fact resolve — which is the next thing to measure.
+
+### 3. Rust precision after the interior-prologue fix
+
+Section 9 removed 790 of the Rust corpus' false positives and took it from PPV 75.817 to **78.951**,
+which is still the lowest of any family here. 95.3% of what remains are interior splits, so the class
+is the same and the byte pattern is not.
+
+**Ceiling:** matching the 92.0 the 32-bit ByteWeight set scores is another 13 points, and nothing here
+says one mechanism accounts for the rest — the next step is to histogram the remaining interior
+splits by candidate source the way the `41 57` seed was found, not to guess a second pattern.
+
+### 4. Go/AArch64: a tailcall path the shared engine gates and this backend does not
 
 Go arm64 produces **0.1340 false positives per truth function** against 0.0367 on amd64 and 0.0173
 on 386 — a 3.6× rate on the same source programs. **170 of 246** false positives on
@@ -261,19 +422,20 @@ Go true positives on every architecture come from the pclntab, and no other cand
 contributes a single one. The frozen corpora have no AArch64 member, so the bundled AArch64
 fixtures are the only local regression check, and they hold 1 and 0 tailcall-only candidates.
 
-### 4. NativeAOT precision — the worst single cell of any family
+### 5. NativeAOT precision — the worst single cell of any family
 
-PPV **73.40** on a 5,749-function native image, 2,039 false positives on one binary. Part of that is
-truth: `.eh_frame` in the same image declares 6,513 ranges against the symbol table's 5,749, and
-**702 of the 2,039 apparent false positives are FDE-declared**, so scoring against the union gives
-82.55 / 95.09. That leaves 1,337 genuine false positives and, in the other direction, **326 FDE
-ranges not reported at all**. The image carries .NET metadata beside its native code, which no
-candidate pass consults, and a full exception table.
-**Ceiling:** +9.2 PPV from the truth correction alone, which is bookkeeping rather than a fix; the
-remaining 1,337 are worth about +17 PPV on this cell and need more than one NativeAOT artifact
+PPV **74.36** on a 5,749-function native image — 1,940 false positives on one binary, after section 9
+removed 99 of them. Part of that is truth rather than over-detection: `.eh_frame` in the same image
+declares 6,513 ranges against the symbol table's 5,749, and **702 of the 1,940 apparent false
+positives are FDE-declared**, so scoring against the union of the two gives 83.64 / 95.09. That
+leaves **1,238** genuine false positives and, in the other direction, **326 FDE ranges not reported
+at all**. The image carries .NET metadata beside its native code, which no candidate pass consults,
+and a full exception table.
+**Ceiling:** +9.3 PPV from the truth correction alone, which is bookkeeping rather than a fix; the
+remaining 1,238 are worth about +16 PPV on this cell and need more than one NativeAOT artifact
 before a mechanism can be claimed.
 
-### 5. ReadyToRun native code is not analysed at all under default routing
+### 6. ReadyToRun native code is not analysed at all under default routing
 
 626 native functions per assembly, recoverable at 99.84 precision once the intel backend sees the
 image, and zero recovered as shipped because the CLR header routes it to the CIL backend. This is a
@@ -282,41 +444,49 @@ report by virtual address, so the two cannot be merged without changing the repo
 it needs a maintainer's call on the shape. **Ceiling:** the entire precompiled native body of every
 ReadyToRun assembly, which is most of what such an assembly ships.
 
-### 6. The CIL backend reports file offsets while every other backend reports virtual addresses
+### 7. The CIL backend reports file offsets while every other backend reports virtual addresses
 
 A consequence of the above, and worth stating separately: a managed report's function offsets are
 not comparable with `base_addr` plus an RVA. Anything correlating a CIL report with a native one is
 comparing two address spaces. **Ceiling:** not an accuracy number; a correctness question for
 downstream consumers.
 
-### 7. Three headerless dumps still get their bitness wrong
+### 8. Three headerless dumps still get their bitness wrong
 
-`geodo`, `hamweq` and `tinba` carry no header, so the fix landed in section 4 cannot reach them, and
-the second statistic tried instead was measured worse (section 5). Attacking it needs decoding coverage in
+`geodo`, `hamweq` and `tinba` carry no header, so the fix landed in section 5 cannot reach them, and
+the second statistic tried instead was measured worse (section 6). Attacking it needs decoding coverage in
 both modes rather than another byte statistic. **Ceiling:** three of 57 samples on one corpus, and
 only under `--bitness auto`; nothing at all under the configuration published figures use.
 
-### 8. Corpus hygiene
+### 9. Corpus hygiene
 
 The mispaired ByteWeight binary is worth **1.374 macro F1 and 1.4 points of recall** on Bao 32, and
 **1.662** on its dumped variant, as pure measurement error. Repairing the truth file rather than
 excluding the binary would recover a real 472-function sample.
 
-## 9. Per-family results
+## 12. Per-family results
 
 Every family below is measured on a corpus built for this work; none of them had ever been measured
 for function-start accuracy. Filter `all`, arithmetic macro mean.
 
 | family | n | PPV | TPR | F1 | truth functions |
 |---|---|---|---|---|---|
+| C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 213,441 |
 | Go (pclntab truth) | 45 | 94.843 | 99.618 | 97.118 | 162,621 |
-| .NET (CIL + NativeAOT) | 4 | 93.349 | 99.461 | 95.968 | 7,441 |
-| Rust (gnu targets) | 24 | **75.817** | 97.493 | 85.193 | 33,817 |
-| ARM64 Mach-O (linker truth) | 11 | 93.986 | **95.616** | 94.381 | 2,753 |
+| .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 |
+| Rust (gnu targets) | 24 | **78.951** | 97.493 | 87.185 | 33,817 |
+| ARM64 Mach-O (linker truth) | 11 | 94.008 | **96.345** | 94.778 | 2,753 |
 
 For comparison, the corpora the previous evaluation used, same settings: ByteWeight 32-bit
 (n=68) 92.041 / 97.872, ByteWeight 64-bit (n=68) 99.080 / 99.838, malware dumps (n=57)
 92.639 / 98.561.
+
+**C/C++.** The largest corpus here and the closest thing to the population the frozen ByteWeight sets
+represent, built by different compilers: 260 binaries, ten programs, gcc, clang and both MinGW
+targets, `O0` through `O3` plus `Os`, static and no-PIE. It scores **95.523** recall against the
+97.872 of the 32-bit ByteWeight set and the 99.838 of the 64-bit one, on 213,441 truth functions —
+so the recall the published figures show is not a property of the disassembler alone but of the
+corpus those figures were measured on, which is one compiler at four optimization levels.
 
 **Go.** Recall is essentially perfect and stripping costs nothing — `-ldflags="-s -w"` scores 94.939
 / 99.668 against the unstripped 94.916 / 99.668 over 21 cells each, which is the design's claim
@@ -327,31 +497,36 @@ over-detects 3.6× more than the intel one and does so on every program and both
 99.6% of those extra detections are interior to a real function's span.
 
 **.NET.** Managed CIL is exact — 100/100/100 on 564 methods in each of three publish modes, because
-metadata enumerates every body. NativeAOT is native code and scores 73.40 precision, the lowest
-figure anywhere here; at least a third of that is a truth gap rather than over-detection (see the
-research log), leaving roughly 1,337 unexplained false positives on one binary.
+metadata enumerates every body. NativeAOT is native code and scores 74.36 precision, the lowest
+figure anywhere here; 702 of its 1,940 false positives are ranges the same image's `.eh_frame`
+declares and the symbol table does not, leaving 1,238 unexplained.
 
 **ARM64 Mach-O.** The only AArch64 corpus here whose truth comes from a linker rather than one
 compiler's metadata: eleven real Mach-O binaries, each declaring its own function starts in
 `LC_FUNCTION_STARTS`. The finding is recall. Every sample under 90 truth functions is recovered
-completely and every sample above it is not — 157 missed of 1,087 on the largest, 55 of 556, 30 of
-274 — and micro recall is **90.229** against 99.838 on the 64-bit ByteWeight set. That is the
-largest architecture gap measured anywhere in this work, and the opposite of what the Go family
-suggested, where recall is essentially perfect because the pclntab names every function and SMDA
-reads it. Take the symbol oracle away and AArch64 recovery falls a long way behind intel recovery on
-comparable code.
+completely and every sample above it is not, and micro recall is **91.246** — after the fix in
+section 8, from 90.229 before it — against 99.745 on the 64-bit ByteWeight set. That is the largest
+architecture gap measured anywhere in this work, and the opposite of what the Go family suggested,
+where recall is essentially perfect because the pclntab names every function and SMDA reads it. Take
+the symbol oracle away and AArch64 recovery falls a long way behind intel recovery on comparable
+code.
+
+The figures above are measured with `SmdaConfig.USE_MACHO_FUNCTION_STARTS` at its default, which is
+off. That option makes SMDA read the same table this corpus uses as ground truth; measured with it
+on, the corpus scores the engine against the answer key it was handed.
 
 The first measurement of this corpus said PPV 39.901, and it was the corpus rather than the
-disassembler. Section 11 records what was wrong and how it was found; the short version is that
+disassembler. Section 14 records what was wrong and how it was found; the short version is that
 Mach-O stub sections are the counterpart of an ELF PLT and `LC_FUNCTION_STARTS` does not name them.
 
-**Rust.** The lowest precision of any family whose truth is complete, and the truth *is* complete —
+**Rust.** The lowest precision of any family whose truth is complete even after section 9 took it
+from 75.817 to 78.951, and the truth *is* complete —
 `.eh_frame` names fewer ranges than the symbol table and their union adds nothing. 95.3% of its
 false positives are interior splits, and one byte pattern accounts for half of the reference-less
 ones: `push r15; push r14` seeded four bytes inside functions that open with
 `push rbp; mov rbp, rsp`.
 
-## 10. What is not covered, and why
+## 13. What is not covered, and why
 
 - **The Andriesse corpus is absent.** Its SPEC CPU2006 component is licence-restricted, so the
   origin evaluation's `GA` rows cannot be reproduced. The corpora built here stand in for the
@@ -369,7 +544,7 @@ ones: `push r15; push r14` seeded four bytes inside functions that open with
   agenda with no measurement behind it. The bundled Delphi fixtures exercise the symbol providers
   but not function-start accuracy.
 
-## 11. Method notes worth keeping
+## 14. Method notes worth keeping
 
 Three habits earned their place during this work and are worth stating, because each of them
 changed a conclusion:
@@ -379,10 +554,10 @@ was claimed inert on the bundled fixtures. Checking only that both runs produced
 have proved nothing; checking that the directory and the section walk read the *same entry counts*
 — 48, 7 and 1,666 — proved it.
 
-**Ask whether the truth is right before attributing a low score to the tool.** NativeAOT's 73.40
+**Ask whether the truth is right before attributing a low score to the tool.** NativeAOT's low
 precision looked like the worst defect found. A second independent declaration in the same image —
-`.eh_frame` — named 764 ranges the symbol table did not, and 702 of the "false positives" were
-among them. Running the same check on Rust, where it would have been equally convenient to blame the
+`.eh_frame` — declares 6,513 ranges against the symbol table's 5,749, and 702 of the "false
+positives" are among them. Running the same check on Rust, where it would have been equally convenient to blame the
 corpus, found the truth complete and the over-detection real.
 
 The ARM64 Mach-O corpus made the same point at four times the size. Its first measurement was
