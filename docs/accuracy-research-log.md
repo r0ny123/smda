@@ -1481,3 +1481,21 @@ over-detection buying completeness — measured on a family that evaluation neve
 
 Recorded with the budget caveat attached: this is Ghidra under the timeout this harness gives both
 engines, and two of its 45 samples exceeded it.
+
+### The gate, across all ten corpora
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|---|
+| ARM64 Mach-O | 11 | +0.209 | **+0.100** | +0.158 | **+12** | **−28** |
+| Built Go (pclntab truth) | 45 | +0.268 | +0.000 | +0.148 | 0 | **−430** |
+| Bao byteweight msvc10-32 | 68 | 0 | 0 | 0 | 0 | 0 |
+| Bao byteweight msvc10-64 | 68 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-32-d | 56 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-64-d | 56 | 0 | 0 | 0 | 0 | 0 |
+| Plohmann malpedia itw | 57 | 0 | 0 | 0 | 0 | 0 |
+| Built C/C++ (gcc, clang, mingw) | 260 | 0 | 0 | 0 | 0 | 0 |
+| Built Rust (gnu targets) | 24 | 0 | 0 | 0 | 0 | 0 |
+| Built .NET (CIL + NativeAOT) | 4 | 0 | 0 | 0 | 0 | 0 |
+
+Eight of ten bit-identical, the two AArch64 corpora both improving, and 458 false positives removed
+for 12 functions gained. `summarize.py --compare` reports `compared=10` and no recall regression.
