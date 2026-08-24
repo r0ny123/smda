@@ -13,7 +13,7 @@ LOGS="${BUILD_LOG_DIR:-$HOME/corpus_build_logs}"
 mkdir -p "$LOGS"
 
 status=0
-for family in native go rust dotnet; do
+for family in native go rust dotnet macho-arm64; do
     echo "=== building $family ==="
     "$PYTHON" tools/bench/build_corpus.py --family "$family" --out "$ROOT/built" \
         > "$LOGS/$family.log" 2>&1
