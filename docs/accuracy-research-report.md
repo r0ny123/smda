@@ -72,7 +72,9 @@ whose binaries carry an `O0`-`O3` label, arithmetic mean for the rest. TPR / PPV
 The IDA and nucleus columns are in the tool's own output and omitted here; they are the origin
 evaluation's figures, labelled `(paper)` in the table itself because no licence is available to
 re-run them. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the
-analysis budget, and is marked and named rather than printed.
+analysis budget, and is marked and named rather than printed. The seventh row of the origin table —
+the malware corpus — is not listed above because its Ghidra column is still being measured; the tool
+prints `not measured` there rather than a blank, so a missing engine cannot be read as a bad score.
 
 **This validates the harness against a second engine.** Ghidra 12.1.3 lands within 0.002 to 0.013 of
 the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different tool, a
@@ -152,7 +154,7 @@ header exists — and exactly three of the 57 malware dumps moved. Precision and
 metadata is addressed by file offset, which a mapped image no longer has, so naming `cil` from the
 header would lose the sample. That carve-out is pinned against a real .NET fixture.
 
-## 6. Measured worse
+## 6. Measured worse, and measured not worth doing
 
 ### A second REX-prefix statistic for the headerless bitness cases
 
@@ -206,6 +208,22 @@ point louder: 653 real functions with no internal caller and no false positives 
 
 Two rejected repairs on the same finding, from opposite directions, both because the discriminator
 was assumed rather than measured. Section 11 records where it has to come from instead.
+
+### Not worth changing: the `endbr64`-then-prologue interior seed
+
+A CET-enabled function opens `endbr64; push rbp; mov rbp, rsp`, and the second half is on the seeded
+list, so the scan books a candidate four bytes inside every such function. The byte statistic is as
+clean as any here: **19,536** such adjacencies in the C/C++ corpus, the `endbr64` a declared function
+start in all 19,536 and the follower a declared start in none.
+
+It changes nothing. Over five binaries holding 9,512 of those adjacencies, **6** of 3,332 false
+positives sit at `endbr64 + 4`: the recursive analysis reaches the function at the `endbr64` first
+and claims those bytes as code, so the interior candidate is discarded before it can be reported.
+Left alone.
+
+The first attempt to measure this returned a clean zero on six binaries, five of which contained
+none of the pattern — a zero with no positive control beside it, behind a perfect byte statistic that
+made it look like confirmation. Section 14 has the habit that caught it.
 
 ## 7. Fix landed: the exception table's address is declared, not conventional
 
@@ -278,6 +296,12 @@ pre-indexed form, so the rule cannot fire there and cannot cost anything.
 
 Twenty-eight functions recovered and **not one false positive added** — the false-positive count is
 identical either side, which is the control that the rule fires only where it was measured to.
+
+Against every other corpus in the harness the change is bit-identical: both ByteWeight sets, both
+dumped variants, the malware dumps, Go, Rust and .NET, nine configs compared in total. Seven of the
+eight are intel, and the eighth — Go on arm64 — is the population where the static counterfactual
+said the predicate fires zero times in 55,964 `bl` instructions. The measured run agrees with the
+static count exactly.
 
 ## 9. Fix landed: a prologue that opens where another prologue ends
 
@@ -540,6 +564,15 @@ ones: `push r15; push r14` seeded four bytes inside functions that open with
   cannot be reproduced from a Linux host. It remains open and is not measured here.
 - **A .NET single-file publish is not scoreable.** The managed assembly is embedded in the apphost
   bundle and nothing in this toolchain unpacks it. That is itself the finding.
+- **There is no AArch64 *build* corpus.** clang here can target `aarch64-linux-gnu` and lld can link
+  it, but no AArch64 libc headers or sysroot are installed, so nothing that includes a standard
+  header compiles and no real project can be built for the architecture. The ARM64 Mach-O corpus
+  stands in, and it is real code with linker-written truth rather than a substitute for a build
+  matrix — it covers one platform, one linker and one kind of program.
+- **Ghidra is measured under this harness' analysis budget.** Both engines get the timeout
+  `--timeout` names, defaulting to SMDA's own so neither is favoured, and on the largest ByteWeight
+  binary that choice decides the result. The cell is marked rather than averaged; read the column as
+  *Ghidra under this budget*.
 - **Delphi is not covered.** No Delphi toolchain is available here, so the family stays on the
   agenda with no measurement behind it. The bundled Delphi fixtures exercise the symbol providers
   but not function-start accuracy.
@@ -571,8 +604,56 @@ entry size — and declining to score the sections nothing declares moved the sa
 authoritative because a linker wrote it.
 
 **Histogram the failures by the source that produced them.** Every conclusion about *where* to fix
-something came from tagging each recovered address with the candidate source that seeded it. It
-turned "Rust precision is bad" into "one seeded byte pattern, four bytes inside a function", and
-"AArch64 is worse than intel" into "a tailcall path the shared engine gates behind a flag and this
-backend does not".
+something came from tagging each recovered address with the candidate source that seeded it, or with
+the first instruction of the function it produced. It turned "Rust precision is bad" into "one seeded
+byte pattern, four bytes inside a function"; "AArch64 recall is bad" into "sixteen functions
+swallowed after a call that does not return, and eight unanalysed branch veneers"; and "this C++ cell
+scores 52" into "1,085 of 1,095 false positives begin with `endbr64`".
+
+**A zero result with no positive control beside it says nothing.** The `endbr64`-then-prologue seed
+was measured on six binaries and returned a clean zero — and five of those six contained none of the
+pattern. What made it dangerous was the byte statistic in front of it: 19,536 adjacencies with a
+perfect 19,536-to-0 split, which made a meaningless zero read as confirmation. Redone on binaries
+that carry the pattern, the answer was still small enough not to act on, but it was an answer.
+
+**Measure the discriminator before building on it.** The `endbr64` finding suggested two repairs and
+both looked obviously right. Filtering on the bytes before the pad: rejected, because a jump-table
+case ends in a `jmp` exactly as a function does. Filtering on whether anything references the pad:
+rejected, and this one had a table behind it — 0% of that cell's false positives were referenced
+against 57.9% of its true positives — which turned out to be a property of one static library nothing
+calls, not of landing pads. Measured over four cells it would have removed more real functions than
+spurious ones. Both are recorded in section 6 rather than quietly dropped, because the next person to
+have the same idea should find the measurement waiting.
+
+## 15. Where every corpus stands at the end of this branch
+
+Filter `all`, arithmetic macro mean, one run of the whole harness at the last commit:
+
+| corpus | n | PPV | TPR | F1 | truth | detected |
+|---|---|---|---|---|---|---|
+| Bao byteweight msvc10-32 | 68 | 92.041 | 97.872 | 94.713 | 110,195 | 115,792 |
+| Bao byteweight msvc10-64 | 68 | 99.080 | 99.838 | 99.454 | 108,187 | 109,584 |
+| Bao_Dumped msvc10-32-d | 56 | 91.189 | 97.510 | 94.060 | 108,486 | 114,162 |
+| Bao_Dumped msvc10-64-d | 56 | 98.874 | 99.811 | 99.338 | 106,679 | 108,455 |
+| Plohmann malpedia itw | 57 | 92.643 | 98.561 | 95.144 | 21,924 | 24,270 |
+| Built C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 213,441 | 229,371 |
+| Built Go (pclntab truth) | 45 | 94.843 | 99.618 | 97.118 | 162,621 | 171,768 |
+| Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
+| Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
+| ARM64 Mach-O (linker truth) | 11 | 94.008 | 96.345 | 94.778 | 2,753 | 2,775 |
+
+**875,544 truth functions across ten corpora, 927,097 detections, no failed sample.** Five of the ten
+corpora and 420,073 of those truth functions did not exist for this project before this branch.
+
+## 16. Summary of what landed
+
+| fix | corpus that shows it | before → after |
+|---|---|---|
+| container header outranks the byte probes | malware dumps, bitness withheld, n=57 | F1 +0.155, 93 recovered, 64 false positives removed |
+| exception table read from the declared directory | .NET ReadyToRun image, 626 declared starts | recall 66.93 → **100.00** |
+| a call that does not return is a boundary | ARM64 Mach-O, n=11 | recall 95.616 → **96.345**, 28 recovered, 0 new false positives |
+| a prologue that opens where another ends | ten corpora | **912** false positives removed, **0** true positives lost |
+
+No corpus lost recall at any step. Two proposed repairs were measured and rejected, and both are in
+section 6 with the numbers that rejected them.
 

@@ -985,7 +985,9 @@ aggregates them.
 | ByteWeight* msvc10-64 | – | 56 | 0.653 / 0.999 | 0.663 / 0.999 | 0.932 / 0.985 | 0.998 / 0.989 |
 
 TPR / PPV. The `O1` 64-bit Ghidra cell holds one binary the engine did not finish inside the analysis
-budget; it is marked and named rather than printed, for the reasons recorded above.
+budget; it is marked and named rather than printed, for the reasons recorded above. The seventh row,
+the malware corpus, is still running under Ghidra and prints `not measured` rather than a blank until
+it lands.
 
 **This is the harness validating itself against a second engine.** Ghidra 12.1.3 lands within 0.002
 to 0.013 of the figures recorded for Ghidra 9.1.2 on four of the five comparable cells — a different
@@ -1016,8 +1018,51 @@ of compilers — and it says the recall the published figures show is a property
 as of the disassembler. ByteWeight is one compiler at four optimization levels; this is three
 compilers at seven build configurations, and it costs two to four points of recall.
 
-Not yet broken down by toolchain or variant. That breakdown is the obvious next question and the
-result files hold everything needed for it.
+**By toolchain**, arithmetic macro mean, and false positives per truth function:
+
+| toolchain | n | PPV | TPR | F1 | FP/truth |
+|---|---|---|---|---|---|
+| clang-x64 | 70 | 95.115 | 97.116 | 95.993 | 0.0849 |
+| gcc-x64 | 70 | 92.272 | 96.809 | 94.086 | 0.1562 |
+| mingw-x64 | 60 | 90.041 | 98.190 | 93.741 | 0.1195 |
+| **mingw-x86** | 60 | 89.481 | **89.499** | 89.353 | 0.1371 |
+
+`mingw-x86` loses nearly nine points of recall against every other cell in the matrix, on identical
+source. It is the only 32-bit member and the only one where recall, not precision, is the limit. The
+32-bit ByteWeight set does not show this — 97.872 there — so it is not 32-bit code as such but 32-bit
+code from this toolchain.
+
+**By build variant:**
+
+| variant | n | PPV | TPR | F1 | FP/truth |
+|---|---|---|---|---|---|
+| O0 | 40 | 92.431 | 99.164 | 95.517 | 0.1003 |
+| O1 | 40 | 91.471 | 97.923 | 94.143 | 0.1483 |
+| O2 | 40 | 91.114 | 93.031 | 91.888 | 0.1290 |
+| O3 | 40 | 90.110 | 92.599 | 91.093 | 0.1560 |
+| Os | 40 | 94.089 | 97.449 | 95.504 | 0.0941 |
+| O2-static | 40 | 90.374 | 92.591 | 91.358 | 0.1361 |
+| O2-nopie | 20 | 95.241 | 96.290 | 95.555 | 0.1057 |
+
+Recall falls monotonically with optimization from `O0` (99.164) to `O3` (92.599), and `Os` — which
+optimizes for size rather than speed, and so inlines and unrolls far less — sits back up at 97.449.
+That is the inlining and tail-merging the origin evaluation predicted would be the hard case,
+measured here across three compilers for the first time.
+
+**Worst cells**, all one program:
+
+| cell | truth | PPV | TPR |
+|---|---|---|---|
+| googletest_mingw-x86_O3 | 1,201 | 54.10 | 63.78 |
+| googletest_mingw-x86_O2 | 1,196 | 60.16 | 64.88 |
+| googletest_gcc-x64_O3 | 1,273 | 53.59 | 83.27 |
+| googletest_gcc-x64_O1 | 1,113 | 52.38 | 94.88 |
+| googletest_gcc-x64_Os | 1,194 | 52.06 | 99.58 |
+| googletest_gcc-x64_O2-nopie | 1,281 | 58.77 | 84.23 |
+
+googletest is a C++ template-heavy static framework linked without any tests, so most of its code is
+dead and nothing inside the binary calls it. It is the hardest artefact in the corpus by a wide
+margin and it is where the `endbr64` mechanism below was found.
 
 ---
 
@@ -1136,3 +1181,114 @@ was assumed rather than measured. What is left is the one thing neither test loo
 address is the target of an indirect branch the jump-table pass resolved. SMDA computes that during
 analysis and does not surface it in a report, so confirming it needs instrumentation rather than
 another counterfactual over existing output.
+
+### Blocked: an AArch64 build corpus
+
+clang here can target `aarch64-linux-gnu` and lld links it, and a freestanding program built that way
+comes out as a real ARM64 ELF with a real symbol table. Nothing beyond that works: there are no
+AArch64 libc headers or sysroot installed, so every project in the C/C++ matrix fails at the first
+standard header, and linking with unresolved symbols would leave the intra-project call graph intact
+but the library calls pointing at zero.
+
+So the AArch64 evidence here is the Mach-O corpus and the Go arm64 cells, and neither is a build
+matrix: one platform and one linker on one side, one compiler on the other. Recorded as a block
+rather than worked around, because a synthetic generated program would have been easy to produce and
+would have measured the generator's idea of a function rather than a compiler's.
+
+---
+
+## 2026-08-24 — re-verifying every published figure
+
+Every number in the report's tables re-derived from the result files rather than from the notes that
+produced them:
+
+```
+[control] checked 33 published figures against the result files; mismatches: 0
+```
+
+The check covers the five per-family rows (PPV, TPR, F1 and truth count each), the five frozen
+corpora, and the three micro figures the AArch64 argument rests on. It is worth running rather than
+trusting, because every one of those numbers passed through prose at least once between the run that
+produced it and the table that prints it, and a figure that is only ever compared against the
+sentence it was copied into cannot disagree with anything.
+
+### The boundary rule against every other corpus
+
+The measurement above is on the corpus the rule was written for. Against the same tree without it,
+over every other corpus in the harness:
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|---|
+| ARM64 Mach-O | 11 | +0.023 | **+0.729** | +0.397 | **+28** | **0** |
+| Bao byteweight msvc10-32 | 68 | 0 | 0 | 0 | 0 | 0 |
+| Bao byteweight msvc10-64 | 68 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-32-d | 56 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-64-d | 56 | 0 | 0 | 0 | 0 | 0 |
+| Plohmann malpedia itw | 57 | 0 | 0 | 0 | 0 | 0 |
+| Built Go (pclntab truth) | 45 | 0 | 0 | 0 | 0 | 0 |
+| Built Rust (gnu targets) | 24 | 0 | 0 | 0 | 0 | 0 |
+| Built .NET (CIL + NativeAOT) | 4 | 0 | 0 | 0 | 0 | 0 |
+
+Eight of the nine are bit-identical, which is what an AArch64-only change should look like: seven of
+them are intel and the eighth, Go on arm64, is the population where the static counterfactual said
+the predicate fires zero times in 55,964 `bl` instructions. The measured run agrees with the static
+count exactly.
+
+---
+
+## 2026-08-24 — where every corpus stands at the end of this branch
+
+One run of the whole harness at the last commit. Filter `all`, arithmetic macro mean.
+
+| corpus | n | PPV | TPR | F1 | truth | detected |
+|---|---|---|---|---|---|---|
+| Bao byteweight msvc10-32 | 68 | 92.041 | 97.872 | 94.713 | 110,195 | 115,792 |
+| Bao byteweight msvc10-64 | 68 | 99.080 | 99.838 | 99.454 | 108,187 | 109,584 |
+| Bao_Dumped msvc10-32-d | 56 | 91.189 | 97.510 | 94.060 | 108,486 | 114,162 |
+| Bao_Dumped msvc10-64-d | 56 | 98.874 | 99.811 | 99.338 | 106,679 | 108,455 |
+| Plohmann malpedia itw | 57 | 92.643 | 98.561 | 95.144 | 21,924 | 24,270 |
+| Built C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 213,441 | 229,371 |
+| Built Go (pclntab truth) | 45 | 94.843 | 99.618 | 97.118 | 162,621 | 171,768 |
+| Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
+| Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
+| ARM64 Mach-O (linker truth) | 11 | 94.008 | 96.345 | 94.778 | 2,753 | 2,775 |
+
+875,544 truth functions, 927,097 detections, no failed sample. Five of the corpora and 420,073 of
+those truth functions did not exist for this project before this branch, and no corpus lost recall at
+any step of it.
+
+---
+
+## 2026-08-24 — not worth changing: the `endbr64`-then-prologue interior seed
+
+A third interior seed suggested itself while separating a test fixture. A CET-enabled function opens
+`endbr64; push rbp; mov rbp, rsp`, and `55 48 89 e5` is on the seeded list, so the scan books a
+candidate four bytes inside every such function. The scan order hides it from the interior-prologue
+rule: `DEFAULT_PROLOGUES` is walked before `ENDBR64_BYTES`, so when `55 48 89 e5` is matched the
+`endbr64` in front of it is not yet a candidate and the rule has nothing to refuse it with.
+
+The byte-level counterfactual looked emphatic. Across the C/C++ corpus there are **19,536**
+`endbr64`-then-frame-prologue adjacencies; the `endbr64` is a declared function start in **all 19,536**
+and the follower four bytes on is a declared start in **none**. A perfect signal, over 40 cells.
+
+It changes nothing measurable. The first six binaries measured returned 0 of 111 false positives at
+`endbr64 + 4` — and five of those six contain **zero** adjacencies, so their zeros meant nothing and
+the measurement had to be redone on binaries that carry the pattern:
+
+| cell | adjacencies present | false positives | of those at `endbr64 + 4` |
+|---|---|---|---|
+| googletest_gcc-x64_O0 | 2,994 | 1,317 | 0 |
+| sqlite3_gcc-x64_O0 | 2,856 | 165 | 2 |
+| lua_gcc-x64_O0 | 1,058 | 255 | 2 |
+| brotli_gcc-x64_O0 | 579 | 111 | 0 |
+| googletest_clang-x64_O2-static | 2,025 | 1,484 | 2 |
+| **total** | **9,512** | 3,332 | **6** |
+
+Six false positives, over binaries holding half the corpus' adjacencies. The recursive analysis
+reaches the function at the `endbr64` first and claims those bytes as code, so the interior candidate
+is discarded before it can be reported. The seed is wasteful and not inaccurate. **Not changed.**
+
+Worth recording for the control rather than the conclusion: the first run of this measurement
+returned a clean zero on a population that was not there. A zero with no positive control beside it
+says nothing at all, and this one had a perfect 19,536-to-0 byte statistic in front of it making it
+look like confirmation.
