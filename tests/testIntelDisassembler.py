@@ -806,11 +806,18 @@ class TestIntelDisassembler(unittest.TestCase):
         self.assertEqual(manager.nextGapCandidate(), 0x1003)
 
     def test_locate_prologue_candidates_seeds_extended_amd64_prologues(self):
+        # each pattern is separated by a ret and a byte of padding. Packed back to back they
+        # would describe one function's prologue followed by its own body, and a match that
+        # begins exactly where an earlier seeded match ends is refused as interior -- which is
+        # a different behaviour, pinned by its own test.
         buf = bytes.fromhex(
             "f30f1efa554889e5"  # 0x1000: endbr64; push rbp; mov rbp, rsp
-            "41574156"  # 0x1008: push r15; push r14
-            "40534883ec20"  # 0x100c: push rbx; sub rsp, imm8
-            "40554883ec18"  # 0x1012: push rbp; sub rsp, imm8
+            "c3cc"  # 0x1008: ret; int3
+            "41574156"  # 0x100a: push r15; push r14
+            "c3cc"  # 0x100e: ret; int3
+            "40534883ec20"  # 0x1010: push rbx; sub rsp, imm8
+            "c3cc"  # 0x1016: ret; int3
+            "40554883ec18"  # 0x1018: push rbp; sub rsp, imm8
         )
         binary_info = BinaryInfo(buf)
         binary_info.base_addr = 0x1000
@@ -823,7 +830,7 @@ class TestIntelDisassembler(unittest.TestCase):
 
         manager.locatePrologueCandidates()
 
-        expected = {0x1000, 0x1008, 0x100C, 0x1012}
+        expected = {0x1000, 0x100A, 0x1010, 0x1018}
         self.assertEqual(expected & manager.candidates.keys(), expected)
 
     def test_locate_prologue_candidates_does_not_seed_common_mid_function_idioms(self):
