@@ -579,3 +579,286 @@ finds, and a recall drop on any corpus is the reject criterion regardless of wha
 precision. The narrower rule — *do not seed a prologue match that begins exactly where another
 seeded prologue match ends* — drops 33 to 123 false positives per Rust ELF cell and **zero true
 positives**, and is inert on all eight mingw PE cells.
+
+---
+
+## 2026-08-24 — Go on AArch64: every true positive comes from the pclntab, and the extra candidates are the whole precision gap
+
+Provenance of every recovered function on `hello_*_default`, by the candidate source that seeded it:
+
+| cell | true positives | of those carrying a symbol | false positives | dominant false-positive source |
+|---|---|---|---|---|
+| linux/amd64 | 1,789 | **1,789 (100.0%)** | 73 | gap search, 72 |
+| linux/386 | 1,864 | **1,864 (100.0%)** | 17 | gap search, 15 |
+| windows/amd64 | 1,848 | **1,848 (100.0%)** | 50 | gap search, 49 |
+| linux/amd64 stripped | 1,789 | **1,789 (100.0%)** | 72 | gap search, 72 |
+| **linux/arm64** | 1,811 | 1,811 (100.0%) | **246** | **tailcall, 170** |
+
+On a Go binary the pclntab names every function, and it is recovered. **No other candidate source
+contributes a single true positive on any architecture** — every one of them contributes only false
+positives. The stripped cell is identical, because `-ldflags="-s -w"` leaves the pclntab in place.
+
+The arm64 excess is not gap search. 170 of its 246 false positives are **tailcall candidates**, a
+source that contributes 0 on the intel cells. Their first instructions are `sub` (91), `adrp` (58),
+`ldr` (30) — mid-function shapes, not entries.
+
+### The mechanism is an asymmetry between the two backends
+
+`SmdaConfig.RESOLVE_TAILCALLS` is `False` by default, and the shared engine honours it —
+`RecursiveDisassembler` gates both of its tailcall paths on the flag. The AArch64 backend calls
+`addTailcallCandidate` from two sites of its own, and neither consults it: one when an unconditional
+branch targets code before the current entry or comes from a short no-frame stub, the other on a
+`bl` fall-through boundary.
+
+Go is exactly the code that makes this expensive: it branches backwards within a function
+constantly, and its runtime calls are `bl` followed by more of the same function.
+
+**Ceiling.** Suppressing tailcall-seeded candidates that fall inside a symbol-declared function
+would remove roughly 170 of 246 false positives per Go arm64 binary — 2,907 across the six arm64
+cells — taking false positives per truth function from 0.134 towards 0.045 and precision from 85.6
+towards about 95, with recall untouched because recall on this family is entirely symbol-driven.
+Whether that generalises beyond Go needs the frozen corpora, which have no AArch64 member; the
+AArch64 fixtures in the test suite are the only local check.
+
+### The exception-table change on the frozen corpora
+
+Filter `all`, arithmetic macro mean, against the same tree without the change:
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP | ΔFN |
+|---|---|---|---|---|---|---|---|
+| Bao byteweight msvc10-32 | 68 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao byteweight msvc10-64 | 68 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-32-d | 56 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Bao_Dumped msvc10-64-d | 56 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Plohmann malpedia itw | 57 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+The 32-bit sets cannot be reached at all — the path is gated on 64-bit — and every 64-bit sample
+reads the identical table either way, which the fixture-level entry counts had already established:
+all 68 ByteWeight x64 binaries and all 3 malpedia x64 dumps declare a table that lands inside a
+section named `.pdata`, so the two ways of finding it name the same bytes.
+
+A table of zeroes on its own is the shape a change that never ran also produces, so the claim rests
+on the positive control beside it and not on this table: the same build, on the ReadyToRun image
+whose table is in `.data`, goes from 419 functions to 627. The 5 × 0 says the change is confined to
+images the old rule could not reach; the 419 → 627 says it reaches them.
+
+**Result** on that image, scored against the 626 `RUNTIME_FUNCTION` starts its own directory
+declares, intel backend:
+
+| | detected | TP | FP | FN | PPV | TPR |
+|---|---|---|---|---|---|---|
+| before | 419 | 419 | 0 | 207 | 100.00 | 66.93 |
+| after | 627 | **626** | 1 | **0** | 99.84 | **100.00** |
+
+Every one of the 419 the old path recovered was already a declared start, and the new run recovers
+all 626 declared starts, so the before set is contained in the after set and no recall was traded
+for the gain. The one address outside the declaration is a function the table does not name, not a
+start the old run had rejected.
+
+**Survey — where the table actually lives**, over every corpus available here:
+
+| population | n with a table | in `.pdata` | elsewhere |
+|---|---|---|---|
+| ByteWeight PE x64 | 68 | 68 | 0 |
+| malpedia PE64 dumps | 3 | 3 | 0 |
+| built .NET, ReadyToRun | 1 | 0 | 1 (`.data`, 626 entries) |
+
+MSVC's own layout is the reason the section-name rule worked for as long as it did. The rule that
+replaces it reads the address the image declares, and keeps the section-name walk for an image whose
+directory is gone but whose section is not.
+
+---
+
+## 2026-08-24 — the harness asserted its own success and then wrote the assertion away
+
+`run.py` counts every sample the engine did not complete, lists it, and refuses to report past
+`--max-failures`. The result file it writes keeps each sample's status. Nothing downstream read it,
+so `paper_table.py`, rebuilding the origin evaluation's table from those files, printed this:
+
+```
+GB  ByteWeight  msvc10-64    O1     17 | ... |  ghidra-12.1.3 TPR 0.000 PPV 0.000 |
+```
+
+One binary — `msvs_whatever_64_O1_vim`, 5,445 truth functions — exceeded the analysis budget after
+420 s and was recorded `status=timeout`, `detected=0`. Scoring an incomplete run as 0 is the right
+call, and the geometric mean the origin evaluation applies to an optimization-level row then carries
+that zero into the cell. The arithmetic is correct and the presentation is not: `TPR 0.000` reads as
+an engine that found nothing on 17 binaries rather than one that did not answer on one of them.
+
+`paper_table.py` now marks such a cell `!k`, names the samples under the table, and counts them on
+its control line. The number itself is left as computed — a cell that averaged a failure should look
+wrong, it should just also say why.
+
+This is the same failure mode as the frozen-corpus zeroes above, seen from the other side: there, a
+table of zeroes needed a positive control to mean anything; here, a single zero needed the reason
+printed beside it.
+
+### Ghidra's budget is a choice this harness makes
+
+The per-file analysis timeout is whatever `--timeout` says, defaulting to SMDA's own so both engines
+get the same budget. That is defensible for a comparison and it is still a choice, and on the
+largest binary in the corpus it decided the result. Recorded here so that the Ghidra column is read
+as *Ghidra under this budget*, not as Ghidra.
+
+---
+
+## 2026-08-24 — an AArch64 corpus, and the truth it needed before it meant anything
+
+The frozen corpora are x86 and x86-64 only, and the Go family's ARM64 cells share one compiler, so
+every AArch64 statement so far rested on one population. The repository already carries a second:
+`tests/aarch64_macho_corpus`, twelve real ARM64 Mach-O binaries. Each declares its own function
+starts in `LC_FUNCTION_STARTS`, written by the linker and contributed to by no disassembler, so the
+corpus arrives with ground truth attached and needs no download and no toolchain. Eleven are usable;
+the twelfth carries the load command with nothing in it and is skipped and named in the manifest,
+because an empty truth set scores every detection as a false positive and reads as a catastrophic
+result rather than as missing truth.
+
+**The first measurement was wrong, and the number was spectacular enough to be worth checking.**
+
+| | PPV | TPR | F1 | truth | detected |
+|---|---|---|---|---|---|
+| `LC_FUNCTION_STARTS` alone | **39.901** | 94.008 | 51.401 | 2,056 | 2,900 |
+| after the correction below | **93.986** | 95.616 | 94.381 | 2,753 | 2,747 |
+
+A precision of 39.9 would have been by far the worst result anywhere in this work, and the histogram
+said why immediately. On `osx.frostyferret`, 127 of 129 false positives were in `__stubs`; on
+`osx.poseidonstealer`, 21 in `__stubs` and 125 in `__objc_stubs`; on `Kitty`, 27 and 28. These are
+import and message trampolines — the Mach-O counterpart of an ELF PLT entry — and this harness'
+own stated convention is that a thunk is a function. `LC_FUNCTION_STARTS` does not name them.
+
+Two different repairs, because the two sections are not equally declared:
+
+- **`__stubs` is truth.** The section's type is `S_SYMBOL_STUBS` and its `reserved2` field carries
+  the stride, the exact counterpart of an ELF section's entry size. The entries are derived from the
+  image's own declaration, not from a byte pattern. SMDA finds every one: 127 of 127 on frostyferret,
+  27 of 27 on Kitty, 21 of 21 on poseidonstealer.
+- **`__objc_stubs` is not scored.** An ObjC message stub is as much a function as an import stub, but
+  the section is `S_REGULAR`, nothing in the image declares its stride, and inferring one from what
+  the disassembler found would let the tool define its own truth. The corpus declares a scored region
+  — `__text` plus the declared stub sections — and 153 detections landing outside it are counted and
+  reported rather than judged.
+
+The scored region is a harness mechanism, not a corpus footnote: `scoreSample` takes it, drops the
+out-of-scope detections, and records how many it dropped, because a scored region that quietly
+shrank reads exactly like precision that rose.
+
+### What the corrected corpus then says
+
+| sample | truth | detected | TP | FP | FN | PPV | TPR |
+|---|---|---|---|---|---|---|---|
+| osx.gimmick | 1,087 | 1,156 | 930 | 226 | 157 | 80.45 | 85.56 |
+| RustyPages | 556 | 503 | 501 | 2 | 55 | 99.60 | 90.11 |
+| LockBit | 481 | 470 | 462 | 8 | 19 | 98.30 | 96.05 |
+| osx.frostyferret | 274 | 246 | 244 | 2 | 30 | 99.19 | 89.05 |
+| osx.poseidonstealer | 89 | 84 | 81 | 3 | 8 | 96.43 | 91.01 |
+| JokerSpy | 83 | 85 | 83 | 2 | 0 | 97.65 | 100.00 |
+| osx.interception | 58 | 58 | 58 | 0 | 0 | 100.00 | 100.00 |
+| osx.amodaltea | 51 | 52 | 51 | 1 | 0 | 98.08 | 100.00 |
+| osx.hloader | 35 | 35 | 35 | 0 | 0 | 100.00 | 100.00 |
+| Kitty | 34 | 53 | 34 | 19 | 0 | 64.15 | 100.00 |
+| BlueNoroff | 5 | 5 | 5 | 0 | 0 | 100.00 | 100.00 |
+
+Macro 93.986 / 95.616 / 94.381; micro 90.426 / 90.229 over 2,753 truth functions.
+
+**The finding is recall, not precision.** Every sample under 90 truth functions is recovered
+completely, and every sample above it is not: 157 missed on gimmick, 55 on RustyPages, 30 on
+frostyferret, 19 on LockBit. Micro recall is **90.2** against 99.8 on the 64-bit ByteWeight set —
+the largest recall gap between two architectures measured anywhere in this work, and the opposite
+of what the Go corpus suggested, where recall is essentially perfect because the pclntab names every
+function and SMDA reads it. Strip the symbol oracle away, as these binaries do, and AArch64 recovery
+falls a long way behind intel recovery on comparable code.
+
+That is now the top AArch64 item, ahead of the tailcall precision work: the tailcall finding is worth
+about 170 false positives per Go arm64 binary, and this is worth 10 points of recall on real code.
+
+### Where the AArch64 recall goes, on one binary
+
+`osx.frostyferret`, 274 truth functions, 30 missed. Each miss classified by whether a detected
+function's span already covers it:
+
+| class | n | shape |
+|---|---|---|
+| swallowed by the function before it | 16 | runs of uniformly sized functions merged into one |
+| never analysed at all | 8 | one-instruction `b` veneers |
+| other | 6 | — |
+
+**Swallowed.** `0x100008900` absorbs eight declared functions at `0x100008950`, `0x1000089a0`, …,
+spaced exactly 0x50 apart; `0x100008cac` absorbs seven more. The merge point is a call:
+
+```
+0x10000894c: bl   #0x100008470
+0x100008950: sub  sp, sp, #0x40      <- declared function start
+```
+
+The callee does not return, the caller therefore has no `ret`, and decoding runs straight on into the
+next function. The AArch64 backend has a rule for exactly this — `analyzeInstruction` checks for a
+`bl` as the previous instruction and asks `_callFallthroughFunctionStart` for a boundary — and it
+declines here. The mechanism exists and its predicate is too strict; that is a much better starting
+point than a missing feature.
+
+**Veneers.** A run of one-instruction branch islands, and the split is not random:
+
+```
+0x100007abc: b #0x10000642c   missed        0x100007ad4: b #0x10000643c   missed
+0x100007ac0: b #0x10000642c   missed        0x100007ad8: b #0x10000643c   missed
+0x100007ac4: b #0x10000642c   missed        0x100007adc: b #0x10000643c   missed
+0x100007ac8: b #0x10000642c   missed        0x100007ae0: b #0x10000643c   missed
+0x100007acc: b #0x100006400   found         0x100007ae4: b #0x100007aec   found
+0x100007ad0: b #0x100007984   found         0x100007ae8: b #0x100007aec   found
+```
+
+Twelve adjacent single-instruction functions, all declared; the eight that branch to `0x10000642c`
+or `0x10000643c` are never analysed and the four that branch elsewhere are. Duplication is not the
+rule — `0x100007ae4` and `0x100007ae8` share a target and both are found — so it is something about
+those two targets. Not yet run down.
+
+Neither class is a scoring artefact: all 30 are `LC_FUNCTION_STARTS` entries and none is a stub whose
+address this work derived.
+
+---
+
+## 2026-08-24 — the C/C++ matrix is complete
+
+260 of 260 cells, no failures, 203,351 truth functions of which 10,090 are PLT entries. Ten programs
+(sqlite3, lua, zlib, xxhash, cjson, lz4, brotli, googletest, tinyxml2, miniz) across four toolchains
+and seven build variants:
+
+| axis | values |
+|---|---|
+| toolchain | gcc-x64 (70), clang-x64 (70), mingw-x64 (60), mingw-x86 (60) |
+| variant | O0, O1, O2, O3, Os, O2-static (40 each), O2-nopie (20, ELF only) |
+
+The last seven failures were zlib under clang: `gzwrite.c` reaches for `write()` and `close()` only
+when told the header is there, and clang rejects an implicit declaration outright. zlib's own
+configure defines `HAVE_UNISTD_H`; the recipe now does too. Recording this because the manifest is
+the only thing that distinguishes a matrix that shrank from one that passed, and 253 of 260 read as
+a complete run everywhere except in the manifest.
+
+### Why the existing fall-through rule declines, and what would have to change
+
+`_callFallthroughFunctionStart` accepts a boundary after a `bl` in three cases: the fall-through
+address is already a candidate; NOP padding was skipped and the address after it is a candidate; or
+NOP padding was skipped and the address after it is 16-aligned. At `0x100008950` none holds — the
+next function begins immediately, with no padding, and nothing had made it a candidate.
+
+The word there is `sub sp, sp, #0x40`, and `is_function_prologue` deliberately does not recognise
+that shape: a bare stack adjustment is as common inside a function as at its head, which is the same
+reason the intel side scores `sub rsp, imm8` but never seeds on it. So the one-word test cannot be
+widened here without the false positives it was written to avoid.
+
+What is unambiguous is the *sequence*:
+
+```
+sub  sp, sp, #0x40
+stp  x20, x19, [sp, #0x20]
+stp  x29, x30, [sp, #0x30]
+add  x29, sp, #0x30
+```
+
+A stack allocation, callee-saved stores into the frame it just made, and the frame-pointer
+establishment. Read as four words rather than one it is not ambiguous at all, and the place it would
+be consulted is narrow: only at a `bl` fall-through, never scanned across the image. The risk to
+quantify before landing it is how often a mid-function `bl` is followed by that whole sequence, which
+is a counterfactual the Go arm64 and Mach-O corpora can both answer.
+
+Recorded as the next AArch64 item; not implemented yet.

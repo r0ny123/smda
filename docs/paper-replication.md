@@ -112,6 +112,12 @@ Two figures from it are load-bearing for how a disagreement on these corpora sho
    would have provided.
 4. **One ByteWeight binary is paired with the wrong ground truth** (see the research log). It is
    included by default, because every published figure for this corpus includes it.
+5. **The analysis budget is this harness' choice, and on one binary it decides the answer.** Both
+   engines get the timeout `--timeout` names, defaulting to SMDA's own so neither is favoured.
+   Ghidra does not finish `msvs_whatever_64_O1_vim` — 5,445 truth functions — inside it, and an
+   incomplete run scores 0. The geometric mean this evaluation applies to an optimization-level row
+   then carries the zero into the whole cell, so that cell is marked and the sample named rather than
+   printed as a number. Read the Ghidra column as *Ghidra under this budget*.
 
 ## Running the replication
 
