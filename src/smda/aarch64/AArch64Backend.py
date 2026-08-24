@@ -158,9 +158,18 @@ class AArch64Backend(ArchBackend):
         words = [cls._wordAt(d, addr + INSTRUCTION_SIZE * step) for step in range(1 + FRAME_RECORD_WINDOW)]
         return opens_stack_frame(words)
 
+    @staticmethod
+    def _isKnownFunctionStart(d, addr):
+        """Whether `addr` is believed to start a function, by either record.
+
+        The candidate set is snapshotted before analysis and gap analysis never adds to
+        it, so asking it alone misses every function found after that point.
+        """
+        return addr in d.fc_manager.getFunctionStartCandidates() or addr in d.disassembly.functions
+
     @classmethod
     def _callFallthroughFunctionStart(cls, d, addr):
-        if addr in d.fc_manager.getFunctionStartCandidates():
+        if cls._isKnownFunctionStart(d, addr):
             return addr
 
         cursor = addr
@@ -168,7 +177,7 @@ class AArch64Backend(ArchBackend):
         while cls._wordAt(d, cursor) == NOP:
             skipped_nop = True
             cursor += INSTRUCTION_SIZE
-        if skipped_nop and cursor in d.fc_manager.getFunctionStartCandidates():
+        if skipped_nop and cls._isKnownFunctionStart(d, cursor):
             return cursor
         if skipped_nop and cursor % 16 == 0:
             word = cls._wordAt(d, cursor)

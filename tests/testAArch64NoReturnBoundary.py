@@ -125,5 +125,37 @@ class NoReturnCallBoundaryTest(unittest.TestCase):
         self.assertNotIn(0x100008904, recovered)
 
 
+@pytest.mark.slow
+class GapRunIntoADiscoveredFunctionTest(unittest.TestCase):
+    """A branch to a function gap analysis found is not a branch into an interior.
+
+    The gap sweep refuses a straight-line run whose unconditional branch lands in
+    already-decoded code that is not a function-start candidate, which is the shape of a
+    mid-function tail. The candidate set it consults is a snapshot taken before analysis
+    and gap analysis never adds to it, so a function that pass discovered looked exactly
+    like an interior and took the branch veneers pointing at it down with it.
+    """
+
+    #: twelve adjacent one-instruction branch veneers, every one declared by the image
+    VENEER_RUN = tuple(range(0x100007ABC, 0x100007AEC, 4))
+
+    def setUp(self):
+        config = SmdaConfig()
+        config.TIMEOUT = 300
+        self.report = Disassembler(config).disassembleUnmappedBuffer(_decode(FIXTURE))
+        self.recovered = {function.offset for function in self.report.getFunctions()}
+
+    def testEveryVeneerInTheRunIsRecovered(self):
+        self.assertEqual(self.report.status, "ok")
+        self.assertEqual([hex(a) for a in self.VENEER_RUN if a not in self.recovered], [])
+
+    def testTheTargetsThoseVeneersBranchToAreThemselvesFunctions(self):
+        # control: the run is only interesting because its targets are real entries. Two of
+        # them are reached by gap analysis rather than by the prologue scan, and those are
+        # the two whose veneers the stale snapshot used to lose.
+        for target in (0x10000642C, 0x10000643C, 0x100006400, 0x100007984, 0x100007AEC):
+            self.assertIn(target, self.recovered)
+
+
 if __name__ == "__main__":
     unittest.main()
