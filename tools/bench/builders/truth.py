@@ -80,9 +80,14 @@ def elfFunctionStarts(path: str) -> Dict[str, object]:
         starts.add(address + image_base)
     plt: Set[int] = set()
     for section in binary.sections:
-        if section.name in (".plt", ".plt.sec", ".plt.got") and section.entry_size:
-            for offset in range(0, section.size, section.entry_size):
-                plt.add(section.virtual_address + offset)
+        if section.name not in (".plt", ".plt.sec", ".plt.got") or not section.entry_size:
+            continue
+        # the first entry of `.plt` is PLT0, the lazy-binding trampoline: it is reached
+        # by falling out of a stub, never called, and no disassembler in this comparison
+        # reports it. `.plt.sec` and `.plt.got` have no such entry.
+        first = section.entry_size if section.name == ".plt" else 0
+        for offset in range(first, section.size, section.entry_size):
+            plt.add(section.virtual_address + offset)
     return {
         "starts": sorted(starts),
         "plt": sorted(plt),

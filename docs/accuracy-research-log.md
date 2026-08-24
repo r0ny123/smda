@@ -238,3 +238,70 @@ mostly a handful of addresses (0.1–2%). Two are substantial — `dyre` at 37.7
 11.2%. That is not mispairing: it is what a packed sample looks like once it has unpacked itself
 into a region the section table never marked executable. The check is a diagnostic there, not a
 verdict, and is reported as such.
+
+### Measured worse: a second REX-prefix statistic does not rescue the headerless cases
+
+The bitness probe reads the share of `0x48` bytes that introduce a REX.W-compatible opcode. Its
+premise is that in 32-bit code, where `0x48` is the complete instruction `dec eax`, the following
+byte is unrelated. Histogramming the followers on the three headerless samples it gets wrong shows
+why the premise fails: on `geodo` the top followers are `8b` (176), `89` (74), `8d` (53), `83` (37)
+— `mov`, `mov`, `lea`, `add/sub imm8`. Those are ordinary 32-bit instructions following a real
+`dec eax`, and they are also exactly the opcodes a REX.W prefix introduces. The probe is weak
+precisely when `0x48` is code rather than data.
+
+The obvious repair is a second statistic over `0x44`, `0x45`, `0x4C`, `0x4D`, which are REX bytes
+selecting the extended register file in 64-bit code and `inc`/`dec esp`/`ebp` in 32-bit code —
+instructions a compiler almost never emits. Measured over 169 dumps (112 ByteWeight, 57 malpedia),
+observation floor 64:
+
+| statistic | 32-bit (n=100–110) | 64-bit (n=59) |
+|---|---|---|
+| `0x48` share | min 0.042, p90 0.335, max 0.933 | min 0.863, p10 0.908, max 0.964 |
+| `0x44/45/4C/4D` share | min 0.013, p90 0.094, max 0.268 | **min 0.089**, p10 0.184, max 0.649 |
+
+**Rejected.** The proposed statistic separates the two classes *worse* than the one already in use:
+its ranges overlap from 0.089 to 0.268, and 17 genuine 64-bit samples sit inside the band the six
+failing 32-bit samples occupy. Used as a conjunction — require both statistics to clear a threshold
+— any cut strong enough to reject the failing 32-bit samples also rejects real 64-bit ones, and
+misreading a 64-bit image as 32-bit is the more damaging error of the two.
+
+The existing threshold of 0.5 is well placed: it sits between the 32-bit p90 of 0.335 and the
+64-bit p10 of 0.908.
+
+**Ceiling on what is left here.** Three headerless samples out of 57 on one corpus, reachable only
+under `--bitness auto`; under the corpus-declared configuration every published figure uses, the
+remaining error is worth exactly nothing. Attacking it needs a different instrument — decoding
+coverage in both modes rather than another byte statistic — and that is a larger change than the
+prize justifies.
+
+---
+
+## 2026-08-24 — Building the corpora no public dataset covers
+
+The evaluation this project inherited is one compiler on one platform: MSVC-built PE files, plus
+memory dumps of the same, plus Windows malware. Everything the disassembler claims to support
+beyond that — Go, .NET, Rust, GCC and Clang C/C++, MinGW PE — has never been measured for
+function-start accuracy at all.
+
+`tools/bench/build_corpus.py` builds four families from source and derives their ground truth from
+what the *unstripped* artifact declares:
+
+| family | ground truth | what is measured |
+|---|---|---|
+| `native` | symbol table of the unstripped link | the stripped twin |
+| `go` | `go tool nm` reading the pclntab of the unstripped build | the stripped twin |
+| `rust` | symbol table of the unstripped link | the stripped twin |
+| `dotnet` | assembly metadata for CIL, symbols for the NativeAOT native image | the published artifact |
+
+Stripping moves no code, so the two describe the same addresses.
+
+### Conventions settled while building it
+
+- **PLT0 is not a function.** The first entry of an ELF `.plt` is the lazy-binding trampoline: it is
+  reached by falling out of a stub, never called, and no engine here reports it. Counting it would
+  penalise every engine for correctly declining to call it a function. Every other `.plt`,
+  `.plt.sec` and `.plt.got` entry is truth. The origin evaluation's ELF convention took every
+  aligned `.plt` entry including the first; this is a deliberate divergence, recorded here.
+- **A managed PE's method starts are its metadata's body RVAs**, not addresses — the CIL backend
+  reports offsets into the file, which is a different address space from every other family here.
+  The CIL and NativeAOT cells are therefore kept as separate rows rather than pooled.

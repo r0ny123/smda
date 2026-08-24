@@ -81,3 +81,34 @@ There is no IDA licence available here, so **IDA 6.7, IDA 7.4 and nucleus are no
 Their columns come from the original evaluation's own per-binary result files and are labelled
 `(paper)` in every table. Ghidra and SMDA are re-measured live and labelled `(measured)`. The
 distinction is in the table itself, not only in the prose around it.
+
+## Numbers taken from the paper rather than re-measured
+
+`docs/paper-tables.json` holds the paper's Table 6.3 (quality of the manual labelling), Table 6.4
+(entry-point reliability by reference count) and Table 6.5 (the disassembler comparison) as
+machine-readable data, together with the corpus descriptions and the design goals above. Nothing in
+that file is a measurement made here.
+
+Two figures from it are load-bearing for how a disagreement on these corpora should be read:
+
+- **Gap search supplies 45.08% of all recovered starts on the ByteWeight corpus, at precision
+  0.933** — every other reference count is at 0.99 or better. On the malware corpus gap search
+  supplies only 20.19%, at precision 0.786. Precision on these corpora is dominated by one
+  mechanism, and it is the one the design deliberately runs aggressively.
+- **The ByteWeight ground truth is not complete.** The paper's own labelling study found 249
+  functions in `client7z` that are referenced by other code and absent from the PDB-derived truth.
+  `client7z` is still among the lowest-scoring binaries in the corpus today, which is consistent
+  with a truth gap rather than a detection failure.
+
+## Where a replication is expected to diverge from the published numbers
+
+1. **Engine versions.** SMDA is at 4.4.7 rather than 1.2.5, and Ghidra at 12.1.3 rather than 9.1.2.
+   Both have had years of development; the comparison answers "where do these tools stand today",
+   not "does the old measurement reproduce bit for bit".
+2. **IDA and nucleus are not re-measured.** No IDA licence is available, so those columns are the
+   original evaluation's own per-binary results, labelled as such in the table.
+3. **The Andriesse corpus is absent.** Its SPEC component is licence-restricted, so the `GA` rows
+   cannot be reproduced at all. A second corpus built from source stands in for the cross-check it
+   would have provided.
+4. **One ByteWeight binary is paired with the wrong ground truth** (see the research log). It is
+   included by default, because every published figure for this corpus includes it.

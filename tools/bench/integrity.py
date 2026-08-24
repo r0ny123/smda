@@ -59,6 +59,8 @@ def executableRanges(path: str, base_addr: Optional[int] = None) -> Optional[Lis
 
 
 def checkSample(sample: Sample) -> Optional[IntegrityFinding]:
+    if not appliesTo(sample):
+        return None
     ranges = executableRanges(sample.path, sample.base_addr)
     if ranges is None:
         return None
@@ -68,11 +70,23 @@ def checkSample(sample: Sample) -> Optional[IntegrityFinding]:
     return IntegrityFinding(name=sample.name, truth=len(sample.truth), outside=len(outside), ranges=ranges)
 
 
+def appliesTo(sample: Sample) -> bool:
+    """Whether truth and section table are in the same address space.
+
+    A managed assembly's method starts are file offsets, because that is what the
+    CIL backend reports; comparing them against virtual section ranges compares two
+    unrelated numbers and would flag every managed sample.
+    """
+    return (sample.meta or {}).get("address_space", "virtual") == "virtual"
+
+
 def checkCorpus(samples: List[Sample]) -> Tuple[List[IntegrityFinding], Dict[str, int]]:
     """Findings plus a control: how many samples the check could actually run on."""
     findings = []
     checked = 0
     for sample in samples:
+        if not appliesTo(sample):
+            continue
         ranges = executableRanges(sample.path, sample.base_addr)
         if ranges is None:
             continue

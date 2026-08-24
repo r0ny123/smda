@@ -50,6 +50,10 @@ with another computed the same way.
 - **Built corpora measure the stripped binary against the unstripped link's symbols.** Stripping
   moves no code, so the two describe the same addresses, and what is measured has no symbol table
   to read.
+- **PLT0 is not a function.** The first entry of an ELF's `.plt` is the lazy-binding trampoline:
+  it is reached by falling out of a stub, never called, and no engine in this comparison reports
+  it. Every other `.plt`, `.plt.sec` and `.plt.got` entry is truth. This diverges from the origin
+  evaluation's ELF convention, which took every aligned `.plt` entry including the first.
 
 ## Filters — always stated, never assumed
 

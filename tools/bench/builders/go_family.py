@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from bench.builders.truth import goFunctionStarts, writeTruth
 
@@ -215,6 +215,19 @@ class GoCell:
     extra: List[str] = field(default_factory=list)
 
 
+def _textLayout(path: str) -> Optional[Tuple[int, int]]:
+    """(address, size) of the executable text, as the container declares it."""
+    import lief
+
+    binary = lief.parse(path)
+    if binary is None:
+        return None
+    for section in binary.sections:
+        if section.name in (".text", "__text"):
+            return (int(section.virtual_address), int(section.size))
+    return None
+
+
 def _writeModule(work_dir: str, program: str, body: str) -> str:
     module_dir = os.path.join(work_dir, program)
     os.makedirs(module_dir, exist_ok=True)
@@ -282,6 +295,11 @@ def build(
             continue
         plan.append(GoCell("cgo", host_goos, host_goarch, mode, cgo=True))
 
+    #: truth for a stripped cell comes from the twin built without -s -w, because the
+    #: symbol table `go tool nm` reads is exactly what that link omits
+    truth_by_twin: Dict[Tuple[str, str, str, bool], Dict[str, object]] = {}
+    plan.sort(key=lambda cell: cell.mode != "default")
+
     for cell in plan:
         record = {"program": cell.program, "goos": cell.goos, "goarch": cell.goarch, "mode": cell.mode, "cgo": cell.cgo}
         built = buildCell(cell, modules[cell.program], work_dir, go_binary)
@@ -291,22 +309,39 @@ def build(
             continue
         name = str(built["name"])
         unstripped = str(built["unstripped"])
-        try:
-            truth = goFunctionStarts(unstripped, go_binary)
-        except (RuntimeError, OSError, subprocess.TimeoutExpired) as failure:
-            record.update({"status": "truth_failed", "error": str(failure)[:300]})
-            cells.append(record)
-            os.remove(unstripped)
-            continue
-        if not truth["starts"]:
-            record.update({"status": "truth_empty"})
-            cells.append(record)
-            os.remove(unstripped)
-            continue
+        twin = (cell.program, cell.goos, cell.goarch, cell.cgo)
+        if cell.mode == "stripped":
+            truth = truth_by_twin.get(twin)
+            if truth is None:
+                record.update({"status": "twin_unavailable"})
+                cells.append(record)
+                os.remove(unstripped)
+                continue
+            layout = _textLayout(unstripped)
+            if layout != truth.get("layout"):
+                # a stripped link is only comparable with its twin's symbols while it
+                # places the same code at the same addresses
+                record.update({"status": "layout_moved", "stripped": layout, "twin": truth.get("layout")})
+                cells.append(record)
+                os.remove(unstripped)
+                continue
+        else:
+            try:
+                truth = goFunctionStarts(unstripped, go_binary)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as failure:
+                record.update({"status": "truth_failed", "error": str(failure)[:300]})
+                cells.append(record)
+                os.remove(unstripped)
+                continue
+            if not truth["starts"]:
+                record.update({"status": "truth_empty"})
+                cells.append(record)
+                os.remove(unstripped)
+                continue
+            truth["layout"] = _textLayout(unstripped)
+            if cell.mode == "default":
+                truth_by_twin[twin] = truth
         measured = os.path.join(binary_dir, name)
-        # the stripped mode is the one whose symbol table is gone; the others
-        # keep theirs, so their truth is trivially readable and they are kept
-        # only as the reference points the stripped cells are compared against
         shutil.copyfile(unstripped, measured)
         writeTruth(
             truth_dir,
