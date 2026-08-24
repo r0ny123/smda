@@ -1276,9 +1276,9 @@ One run of the whole harness at the last commit. Filter `all`, arithmetic macro 
 | Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 162,621 | 171,338 |
 | Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
 | Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
-| ARM64 Mach-O (linker truth) | 11 | 94.217 | 96.446 | 94.936 | 2,753 | 2,759 |
+| ARM64 Mach-O (linker truth) | 11 | 94.220 | 96.711 | 95.074 | 2,753 | 2,767 |
 
-875,544 truth functions, 926,651 detections, no failed sample. Five of the corpora and 420,073 of
+875,544 truth functions, 926,659 detections, no failed sample. Five of the corpora and 420,073 of
 those truth functions did not exist for this project before this branch, and no corpus lost recall at
 any step of it.
 
@@ -1562,3 +1562,94 @@ as informational, is measuring something the accuracy tables miss.
 
 So the branch's headline for this fix — 912 false positives removed, 0 true positives lost — understates
 it. On these two cells it also repairs 119 control-flow graphs each.
+
+---
+
+## 2026-08-24 — the veneers, run down: a candidate snapshot taken before analysis
+
+The correlation recorded above — a veneer is recovered when its target opens with a word
+`is_function_prologue` recognises, and missed when it does not — turned out to be a proxy for
+something else entirely. Instrumenting which pass admits each candidate:
+
+| address | admitted by | detected |
+|---|---|---|
+| `0x100007abc` … `0x100007ac8` | never a candidate | no |
+| `0x100007acc`, `0x100007ad0` | gap search | yes |
+| `0x100007ad4` … `0x100007ae0` | never a candidate | no |
+| `0x100007ae4`, `0x100007ae8` | gap search | yes |
+
+So the gap sweep reaches the run and admits four of twelve. The guard that rejects the other eight is
+`_gapRunFlowsIntoInterior`, which decodes the straight-line run from a gap position and, if it ends
+in an unconditional `b`, suppresses it when the target is *in `code_map` but not a function-start
+candidate* — the shape of a mid-function tail rather than a new function.
+
+**`getFunctionStartCandidates()` is a snapshot taken before analysis begins.** `_buildQueue` fills it
+once from the candidates the discovery passes found; after that only one AArch64 path adds to it, and
+gap analysis never does. On this image it holds **211 addresses while 261 functions are recovered**,
+so **50 recovered functions are invisible to it**:
+
+| veneer target | in `code_map` | is a recovered function | in `getFunctionStartCandidates()` |
+|---|---|---|---|
+| `0x10000642c` | yes | **yes** | **no** |
+| `0x10000643c` | yes | **yes** | **no** |
+| `0x100006400` | yes | yes | yes |
+| `0x100007984` | yes | yes | yes |
+| `0x100007aec` | yes | yes | yes |
+
+The three targets the found veneers point at were seeded by the prologue scan, so they are in the
+snapshot. The two the missed veneers point at were discovered by gap analysis, so they are not — and
+a branch to them reads to the guard as a branch into the middle of somebody else's function. The
+prologue correlation was real and was a symptom: which pass found the target, not what the target
+looks like.
+
+The guard is asking "is this the interior of already-mapped code", and the right way to answer it
+includes the functions recovered since the snapshot was taken. Adding `target in
+disassembly.functions` as an exemption:
+
+| | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| before | 94.217 | 96.446 | 94.936 | 2,524 | 235 | 229 |
+| after | 94.220 | **96.711** | 95.074 | **2,532** | **235** | **221** |
+
+Eight functions recovered, **the false-positive count identical**, and on `osx.frostyferret` the
+veneer run goes from 5 of 13 recovered to **13 of 13**.
+
+The gate across all ten corpora: nine bit-identical, only the ARM64 Mach-O corpus moving.
+
+| corpus | n | ΔPPV | ΔTPR | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|---|---|
+| ARM64 Mach-O | 11 | +0.002 | **+0.265** | +0.138 | **+8** | **0** |
+| the other nine | 68/68/56/56/57/260/45/24/4 | 0 | 0 | 0 | 0 | 0 |
+
+An AArch64-only change reaching only AArch64, and the one corpus it reaches gaining recall without
+paying for it.
+
+### Why this is worth more than eight functions
+
+`getFunctionStartCandidates()` is consulted in several places as though it meant "addresses believed
+to start a function". It means "addresses the discovery passes proposed before analysis started", and
+on this image the two differ by 50 of 261. Any guard that reads it as the former is wrong by that
+margin for every function found after `_buildQueue` ran — which is every gap-discovered function, and
+on AArch64 that is a large share of what gap analysis exists to find.
+
+This fix corrects the one site the veneer run exposed, and the set has one definition, so the rest of
+its readers can be enumerated rather than guessed at. All six:
+
+| site | shape | verdict |
+|---|---|---|
+| `X86Backend` jump classifier, two sites | `if dest in disassembly.functions: … elif dest in getFunctionStartCandidates():` | **benign** — the live set is tested first |
+| `AArch64Backend._analyzeUncondBranch` | same `if … functions` / `elif … candidates` shape | **benign** — same reason |
+| `AArch64Backend._callFallthroughFunctionStart`, two tests | `if addr in getFunctionStartCandidates(): return addr` | **sibling** — no live-set test in front of it |
+| `_isLikelyInteriorBtiCandidate` | `if addr in code_map and addr not in getFunctionStartCandidates()` | **sibling** — identical to the fixed site |
+
+Three of the six are already correct because they consult `disassembly.functions` first and fall back
+to the snapshot only for addresses that are not yet functions, which is what the snapshot is good for.
+Two are the same defect.
+
+Both siblings are **inert on every corpus available here** — the ARM64 Mach-O figures are identical
+with and without them, and Go's gap analysis contributes little because the pclntab names everything.
+They are corrected anyway, because they are the same defect and the correction can only stop the code
+suppressing at an address already recovered as a function, which cannot lose one. Recorded as a class
+sweep rather than as a measured gain: the measured gain is the eight veneers, and these two are the
+rest of the class.
+

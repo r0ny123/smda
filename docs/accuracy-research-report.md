@@ -96,7 +96,7 @@ ceiling. On that row the gap between the two tools is now 0.663 against 0.998.
 
 ## 4. Where today's SMDA stands
 
-This is the **baseline** these corpora were at before any change on this branch — section 16 has the
+This is the **baseline** these corpora were at before any change on this branch — section 17 has the
 end state. Filter `all`, arithmetic macro mean, commit `802e627` (SMDA 4.4.7), against SMDA 4.4.1
 measured through the same harness:
 
@@ -215,7 +215,7 @@ inside the binary and a real function there is as reference-less as a spurious p
 point louder: 653 real functions with no internal caller and no false positives to trade for them.
 
 Two rejected repairs on the same finding, from opposite directions, both because the discriminator
-was assumed rather than measured. Section 12 records where it has to come from instead.
+was assumed rather than measured. Section 13 records where it has to come from instead.
 
 ### Gating both AArch64 tailcall sites together
 
@@ -255,7 +255,7 @@ Left alone.
 
 The first attempt to measure this returned a clean zero on six binaries, five of which contained
 none of the pattern — a zero with no positive control beside it, behind a perfect byte statistic that
-made it look like confirmation. Section 15 has the habit that caught it.
+made it look like confirmation. Section 16 has the habit that caught it.
 
 ## 7. Fix landed: the exception table's address is declared, not conventional
 
@@ -400,9 +400,53 @@ the control that the change reaches only what it was meant to.
 corpus — functions on two binaries nothing else reaches — and a recall drop on any corpus is the
 reject criterion. Gating both hid this: those 7 losses and these 12 gains partly cancel into a small
 net recall drop that reads as a reason to reject the whole idea. Section 6 records that rejection and
-section 12 carries the branch-target site as an open item.
+section 13 carries the branch-target site as an open item.
 
-## 11. What the harness itself contributes
+## 11. Fix landed: a candidate snapshot taken before analysis hides half the functions
+
+**The defect.** The AArch64 gap sweep refuses a straight-line run whose unconditional branch lands in
+already-decoded code that is not a function-start candidate — the shape of a mid-function tail rather
+than a new function. The set it consults, `getFunctionStartCandidates()`, is a **snapshot taken
+before analysis begins**: `_buildQueue` fills it once from the discovery passes, and gap analysis
+never adds to it. On one image it holds **211 addresses while 261 functions are recovered**, so 50
+recovered functions are invisible to it and a branch to any of them reads as a branch into somebody
+else's interior.
+
+**How it showed up.** Twelve adjacent one-instruction branch veneers on one image, every one declared
+by the linker, and only four recovered. The four that were recovered branch to functions the prologue
+scan seeded; the eight that were not branch to two functions **gap analysis discovered**. The
+correlation first recorded — that a veneer survives when its target opens with a recognised prologue —
+was a symptom of which pass found the target, not of what the target looks like.
+
+| veneer target | in `code_map` | is a recovered function | in the snapshot |
+|---|---|---|---|
+| `0x10000642c`, `0x10000643c` | yes | **yes** | **no** |
+| `0x100006400`, `0x100007984`, `0x100007aec` | yes | yes | yes |
+
+**The rule.** Ask the live function set as well. A branch to something already recovered as a function
+is not a branch into an interior, whichever pass recovered it.
+
+**The class, swept.** The set has one definition, so its six readers can be enumerated rather than
+guessed at. Three are already correct — the two `X86Backend` jump classifiers and
+`AArch64Backend._analyzeUncondBranch` all test `disassembly.functions` first and fall back to the
+snapshot only for addresses that are not yet functions, which is what the snapshot is good for. Two
+are the same defect and are corrected with it: `_callFallthroughFunctionStart`, whose two tests have
+no live-set check in front of them, and `_isLikelyInteriorBtiCandidate`, whose condition is identical
+to the one fixed here. Both are **inert on every corpus available** — the figures below are the same
+with and without them — and are corrected because they are the same defect and the correction can
+only stop the code suppressing at an address already recovered as a function, which cannot lose one.
+
+**Result**, ARM64 Mach-O, n=11:
+
+| | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| before | 94.217 | 96.446 | 94.936 | 2,524 | 235 | 229 |
+| after | 94.220 | **96.711** | 95.074 | **2,532** | **235** | **221** |
+
+Eight functions recovered with the false-positive count identical, and on `osx.frostyferret` the
+veneer run goes from 5 of 13 to **13 of 13**. Go and both ByteWeight sets are bit-identical.
+
+## 12. What the harness itself contributes
 
 Three properties were added because a measurement without them has already misled this project:
 
@@ -425,7 +469,7 @@ Three properties were added because a measurement without them has already misle
 if recall fell on any config, so the reject criterion is enforced by the tool rather than by
 remembering to look.
 
-## 12. Ranked remaining agenda, with ceilings
+## 13. Ranked remaining agenda, with ceilings
 
 Each item names what it would be worth and on which corpus, so nothing here is ranked on
 plausibility alone. The first two have a mechanism established and a candidate change measured
@@ -444,15 +488,13 @@ completely, and every larger one is not.
 
 Classifying every miss on one binary split them cleanly, and half of them are now fixed. Sixteen of
 thirty were **swallowed by the function before them** — that is what section 8 addresses, and fifteen
-of those sixteen are recovered. Eight more are runs of **one-instruction `b` veneers** that are never
-analysed at all, and the split within a run is exact: of twelve adjacent declared veneers, the four
-whose target opens with a word `is_function_prologue` recognises are found and the eight whose target
-does not are missed. All five targets are themselves declared and recovered, so it is not the target
-being missed that loses the veneer — whatever pass reaches a veneer reaches it through its target
-having been seeded as a prologue first.
+of those sixteen are recovered. Eight more were runs of **one-instruction `b` veneers** never analysed at all; **section 11 fixes
+that half** — the gap sweep was refusing them because their targets were discovered by a pass whose
+results a pre-analysis snapshot does not carry.
 
-**Ceiling:** the veneers are 8 of the remaining 15 misses on that binary; the whole remaining gap is
-+8.5 micro recall on this corpus, which would put AArch64 within a point and a half of intel.
+**Ceiling:** with sections 8 and 11 landed, 23 of the 30 misses on that binary are recovered and
+7 remain. Across the corpus the remaining gap is worth about +8 micro recall, which would put AArch64
+within a point and a half of intel; what is left has no single mechanism identified yet.
 
 ### 2. `endbr64` is seeded as a function start and marks every indirect-branch target
 
@@ -555,7 +597,7 @@ The mispaired ByteWeight binary is worth **1.374 macro F1 and 1.4 points of reca
 **1.662** on its dumped variant, as pure measurement error. Repairing the truth file rather than
 excluding the binary would recover a real 472-function sample.
 
-## 13. Per-family results
+## 14. Per-family results
 
 Every family below is measured on a corpus built for this work; none of them had ever been measured
 for function-start accuracy. Filter `all`, arithmetic macro mean.
@@ -566,7 +608,7 @@ for function-start accuracy. Filter `all`, arithmetic macro mean.
 | Go (pclntab truth) | 45 | 94.843 | 99.618 | 97.118 | 162,621 |
 | .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 |
 | Rust (gnu targets) | 24 | **78.951** | 97.493 | 87.185 | 33,817 |
-| ARM64 Mach-O (linker truth) | 11 | 94.008 | **96.345** | 94.778 | 2,753 |
+| ARM64 Mach-O (linker truth) | 11 | 94.220 | **96.711** | 95.074 | 2,753 |
 
 For comparison, the corpora the previous evaluation used, same settings: ByteWeight 32-bit
 (n=68) 92.041 / 97.872, ByteWeight 64-bit (n=68) 99.080 / 99.838, malware dumps (n=57)
@@ -615,7 +657,7 @@ off. That option makes SMDA read the same table this corpus uses as ground truth
 on, the corpus scores the engine against the answer key it was handed.
 
 The first measurement of this corpus said PPV 39.901, and it was the corpus rather than the
-disassembler. Section 15 records what was wrong and how it was found; the short version is that
+disassembler. Section 16 records what was wrong and how it was found; the short version is that
 Mach-O stub sections are the counterpart of an ELF PLT and `LC_FUNCTION_STARTS` does not name them.
 
 **Rust.** The lowest precision of any family whose truth is complete even after section 9 took it
@@ -625,7 +667,7 @@ false positives are interior splits, and one byte pattern accounts for half of t
 ones: `push r15; push r14` seeded four bytes inside functions that open with
 `push rbp; mov rbp, rsp`.
 
-## 14. What is not covered, and why
+## 15. What is not covered, and why
 
 - **The Andriesse corpus is absent.** Its SPEC CPU2006 component is licence-restricted, so the
   origin evaluation's `GA` rows cannot be reproduced. The corpora built here stand in for the
@@ -652,7 +694,7 @@ ones: `push r15; push r14` seeded four bytes inside functions that open with
   agenda with no measurement behind it. The bundled Delphi fixtures exercise the symbol providers
   but not function-start accuracy.
 
-## 15. Method notes worth keeping
+## 16. Method notes worth keeping
 
 Three habits earned their place during this work and are worth stating, because each of them
 changed a conclusion:
@@ -700,7 +742,7 @@ calls, not of landing pads. Measured over four cells it would have removed more 
 spurious ones. Both are recorded in section 6 rather than quietly dropped, because the next person to
 have the same idea should find the measurement waiting.
 
-## 16. Where every corpus stands at the end of this branch
+## 17. Where every corpus stands at the end of this branch
 
 Filter `all`, arithmetic macro mean, one run of the whole harness at the last commit:
 
@@ -715,12 +757,12 @@ Filter `all`, arithmetic macro mean, one run of the whole harness at the last co
 | Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 162,621 | 171,338 |
 | Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
 | Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
-| ARM64 Mach-O (linker truth) | 11 | 94.217 | 96.446 | 94.936 | 2,753 | 2,759 |
+| ARM64 Mach-O (linker truth) | 11 | 94.220 | 96.711 | 95.074 | 2,753 | 2,767 |
 
-**875,544 truth functions across ten corpora, 926,651 detections, no failed sample.** Five of the ten
+**875,544 truth functions across ten corpora, 926,659 detections, no failed sample.** Five of the ten
 corpora and 420,073 of those truth functions did not exist for this project before this branch.
 
-## 17. Summary of what landed
+## 18. Summary of what landed
 
 | fix | corpus that shows it | before → after |
 |---|---|---|
@@ -729,6 +771,7 @@ corpora and 420,073 of those truth functions did not exist for this project befo
 | a call that does not return is a boundary | ARM64 Mach-O, n=11 | recall 95.616 → **96.345**, 28 recovered, 0 new false positives |
 | a prologue that opens where another ends | ten corpora | **912** false positives removed, **0** true positives lost |
 | the cut after a call recovers the function, not a seed | ARM64 Mach-O n=11 and Go n=45 | 12 recovered, **458** false positives removed |
+| a candidate snapshot taken before analysis hides half the functions | ARM64 Mach-O n=11 | 8 recovered, **0** new false positives |
 
 Neither landed candidate rule costs time. Against the branch point, median of three runs: `cutwail`
 0.183 s → 0.185 s, `dotnet_readytorun` 0.340 s → 0.341 s, and the largest bundled fixture
