@@ -810,7 +810,26 @@ point than a missing feature.
 Twelve adjacent single-instruction functions, all declared; the eight that branch to `0x10000642c`
 or `0x10000643c` are never analysed and the four that branch elsewhere are. Duplication is not the
 rule — `0x100007ae4` and `0x100007ae8` share a target and both are found — so it is something about
-those two targets. Not yet run down.
+those two targets.
+
+It is what the target's own first instruction looks like, and the correlation is exact:
+
+| veneer target | opens with | veneers pointing there | found |
+|---|---|---|---|
+| `0x100006400` | `stp x29, x30, [sp, #-0x10]!` | 1 | yes |
+| `0x100007984` | `stp x29, x30, [sp, #-0x10]!` | 1 | yes |
+| `0x100007aec` | `stp x22, x21, [sp, #-0x30]!` | 2 | yes |
+| `0x10000642c` | `ldp x9, x8, [x1, #0x20]` | 4 | **no** |
+| `0x10000643c` | `ldr x0, [x0, #0x28]` | 4 | **no** |
+
+All five targets are themselves declared and all five are recovered, so it is not the target being
+missed that loses the veneer. The four found veneers point at addresses whose first word
+`is_function_prologue` recognises; the eight missed ones point at addresses it does not. Whatever
+path reaches a veneer is therefore reaching it through its target having been seeded as a prologue
+first, and a target that opens mid-function-looking — as a linker-generated entry point often
+does — takes its veneers down with it.
+
+Recorded as a clue rather than a mechanism: which pass that is has not been instrumented.
 
 Neither class is a scoring artefact: all 30 are `LC_FUNCTION_STARTS` entries and none is a stub whose
 address this work derived.
@@ -1292,3 +1311,40 @@ Worth recording for the control rather than the conclusion: the first run of thi
 returned a clean zero on a population that was not there. A zero with no positive control beside it
 says nothing at all, and this one had a perfect 19,536-to-0 byte statistic in front of it making it
 look like confirmation.
+
+---
+
+## 2026-08-24 — measured worse: gating the AArch64 tailcall seeding
+
+The AArch64 backend seeds tailcall candidates from two sites of its own, and neither consults
+`SmdaConfig.RESOLVE_TAILCALLS` — which is `False` by default and which the shared engine honours on
+both of its own tailcall paths. On Go arm64 that source produces 170 of 246 false positives per
+binary and contributes none on any intel cell. Making the backend honour the flag is the obvious
+consistency repair.
+
+Measured on the ARM64 Mach-O corpus, n=11, with the boundary rule's cut kept and only the candidate
+seeding gated:
+
+| | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|
+| as shipped | 94.008 | **96.345** | 94.778 | 2,512 | 263 |
+| seeding gated | 94.684 | **96.314** | 95.203 | 2,517 | 230 |
+
+Macro recall falls by 0.031, and **a recall drop on any corpus is the reject criterion**. Per sample:
+
+| sample | ΔTP | ΔFP |
+|---|---|---|
+| osx.gimmick | **+12** | **−28** |
+| RustyPages | **−6** | 0 |
+| LockBit | 0 | −2 |
+| osx.frostyferret | −1 | +1 |
+| Kitty | 0 | −4 |
+
+The seeding is net-negative on precision — 34 false positives against 7 true positives — and it is
+not worthless: seven functions on two binaries are reached only through it. Micro recall actually
+rises, 91.246 to 91.428, because the twelve gimmick recovers outweigh the seven lost; the macro mean
+is what the reject criterion reads, and it falls. **Rejected as a blunt gate.**
+
+What the numbers argue for is the narrower rule the other two fixes took: keep the source and refuse
+the cases that are provably interior, rather than switching the source off. The seven true positives
+are the thing to characterise next, and this measurement is what says they exist.

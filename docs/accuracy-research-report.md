@@ -209,6 +209,24 @@ point louder: 653 real functions with no internal caller and no false positives 
 Two rejected repairs on the same finding, from opposite directions, both because the discriminator
 was assumed rather than measured. Section 11 records where it has to come from instead.
 
+### Gating the AArch64 tailcall seeding
+
+The AArch64 backend seeds tailcall candidates from two sites of its own and neither consults
+`SmdaConfig.RESOLVE_TAILCALLS`, which is `False` by default and which the shared engine honours on
+both of its own tailcall paths. On Go arm64 that source produces 170 of 246 false positives per
+binary and contributes none on any intel cell, so making the backend honour the flag is the obvious
+consistency repair.
+
+Measured on the ARM64 Mach-O corpus with the boundary rule's cut kept and only the seeding gated:
+PPV 94.008 → 94.684, F1 94.778 → 95.203, and macro **TPR 96.345 → 96.314**. A recall drop on any
+corpus is the reject criterion, so this is a **reject** — and the per-sample view says why it should
+be: the source costs 34 false positives and earns 7 true positives, and those seven functions on two
+binaries are reached by nothing else.
+
+What that argues for is the narrower shape the two landed fixes took — keep the source, refuse the
+cases that are provably interior — rather than switching it off. Section 11 carries it as an open
+item with the seven true positives named as the thing to characterise.
+
 ### Not worth changing: the `endbr64`-then-prologue interior seed
 
 A CET-enabled function opens `endbr64; push rbp; mov rbp, rsp`, and the second half is on the seeded
@@ -380,9 +398,11 @@ completely, and every larger one is not.
 Classifying every miss on one binary split them cleanly, and half of them are now fixed. Sixteen of
 thirty were **swallowed by the function before them** — that is what section 8 addresses, and fifteen
 of those sixteen are recovered. Eight more are runs of **one-instruction `b` veneers** that are never
-analysed at all, and the split within a run is not random: of twelve adjacent declared veneers, the
-eight branching to two particular targets are missed and the four branching elsewhere are found.
-Nothing yet explains what distinguishes those two targets, and that is the next thing to run down.
+analysed at all, and the split within a run is exact: of twelve adjacent declared veneers, the four
+whose target opens with a word `is_function_prologue` recognises are found and the eight whose target
+does not are missed. All five targets are themselves declared and recovered, so it is not the target
+being missed that loses the veneer — whatever pass reaches a veneer reaches it through its target
+having been seeded as a prologue first.
 
 **Ceiling:** the veneers are 8 of the remaining 15 misses on that binary; the whole remaining gap is
 +8.5 micro recall on this corpus, which would put AArch64 within a point and a half of intel.
@@ -440,11 +460,18 @@ neither consults the flag; the AArch64 candidate manager additionally records a 
 reference for the seed, manufacturing the evidence that makes it score highly — something the shared
 implementation never does. Go is exactly the code that makes this expensive: it branches backwards
 within a function constantly and its runtime calls are `bl` followed by more of the same function.
-**Ceiling:** roughly 2,907 false positives across the six arm64 cells, taking the rate from 0.134
-towards 0.045 and PPV on those cells from 85.6 towards about 95, with recall untouched — 100.0% of
-Go true positives on every architecture come from the pclntab, and no other candidate source
-contributes a single one. The frozen corpora have no AArch64 member, so the bundled AArch64
-fixtures are the only local regression check, and they hold 1 and 0 tailcall-only candidates.
+Switching the source off is not the repair. Section 6 records the measurement: on the ARM64 Mach-O
+corpus, gating it costs 34 false positives and **7 true positives**, macro recall falls by 0.031, and
+a recall drop on any corpus is the reject criterion. The source is net-negative and not worthless —
+seven functions on two binaries are reached by nothing else.
+
+**Ceiling and the next step.** The prize is roughly 2,907 false positives across the six Go arm64
+cells, taking the rate from 0.134 towards 0.045 and PPV there from 85.6 towards about 95; recall on
+Go is untouched either way, because 100.0% of Go true positives on every architecture come from the
+pclntab and no other source contributes one. Reaching it needs the narrower shape both landed fixes
+took — keep the source, refuse the cases that are provably interior — and the seven true positives
+this measurement found are what has to be characterised first. The frozen corpora have no AArch64
+member, so the ARM64 Mach-O corpus and the bundled fixtures are the regression check.
 
 ### 5. NativeAOT precision — the worst single cell of any family
 
