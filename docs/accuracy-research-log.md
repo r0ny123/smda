@@ -1499,3 +1499,26 @@ engines, and two of its 45 samples exceeded it.
 
 Eight of ten bit-identical, the two AArch64 corpora both improving, and 458 false positives removed
 for 12 functions gained. `summarize.py --compare` reports `compared=10` and no recall regression.
+
+---
+
+## 2026-08-24 — what the fixes cost in time
+
+Both landed candidate rules add work per match — the interior-prologue rule compares the preceding
+bytes against up to eight seeded patterns, and the AArch64 boundary rule reads four words — so the
+runtime is worth measuring rather than assuming. Against the branch point, median of three runs each:
+
+| fixture | before | after | functions |
+|---|---|---|---|
+| cutwail | 0.183 s | 0.185 s | 33 either way |
+| dotnet_readytorun | 0.340 s | 0.341 s | 564 either way |
+| **rust_pe_gnu** | **6.504 s** | **5.861 s** | 2,355 either way |
+
+Flat on the small fixtures and **10% faster on the largest**, with the function count identical on all
+three. The per-match cost is real and it is smaller than the work saved by not analysing the
+candidates that are no longer seeded. A precision fix that removes candidates before analysis pays
+for itself in the analysis it skips.
+
+The identical function count on `rust_pe_gnu` is also the expected result rather than a surprise: it
+is a mingw PE, and the counterfactual said the interior-prologue rule is inert on all eight mingw PE
+cells of the built corpus.

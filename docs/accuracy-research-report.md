@@ -723,6 +723,11 @@ corpora and 420,073 of those truth functions did not exist for this project befo
 | a prologue that opens where another ends | ten corpora | **912** false positives removed, **0** true positives lost |
 | the cut after a call recovers the function, not a seed | ARM64 Mach-O n=11 and Go n=45 | 12 recovered, **458** false positives removed |
 
+Neither landed candidate rule costs time. Against the branch point, median of three runs: `cutwail`
+0.183 s → 0.185 s, `dotnet_readytorun` 0.340 s → 0.341 s, and the largest bundled fixture
+`rust_pe_gnu` **6.504 s → 5.861 s**, with the function count identical on all three. The per-match
+cost is smaller than the analysis saved by not seeding the candidates the rules refuse.
+
 No corpus lost recall at any step. Five further proposals were measured and not landed — four
 rejected for costing recall or removing more real functions than spurious ones, one found to change
 nothing worth changing — and all five are in section 6 with the numbers that settled them. One of
