@@ -102,7 +102,10 @@ class SmdaConfig:
     # libstdc++.so.6 it adds 337 functions (8473 -> 8810) for 40-130% more analysis time
     # depending on the machine; on Go ELF and Mach-O memory images, 8 functions each for 20-26%.
     # A jump into an already-recovered function is still treated as a tailcall with the pass
-    # off - only the promotion of not-yet-known targets needs it.
+    # off - only the promotion of not-yet-known targets needs it. The AArch64 backend's
+    # bl fall-through path follows the same flag: it cuts the caller either way, and seeding
+    # the boundary as well measured worse on both AArch64 corpora (ARM64 Mach-O n=11: 12
+    # fewer functions and 28 more false positives; Go n=45: 430 more false positives).
     RESOLVE_TAILCALLS = False
     # optional metadata generation options; the largest built-in performance lever.
     # Measured on the cutwail fixture, as a share of all Python calls per run: hashing 10.0%,

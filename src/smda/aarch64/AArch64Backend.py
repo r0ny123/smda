@@ -376,7 +376,13 @@ class AArch64Backend(ArchBackend):
         if previous_instruction and previous_instruction[2] == "bl":
             boundary = self._callFallthroughFunctionStart(d, i_address)
             if boundary is not None:
-                d.fc_manager.addTailcallCandidate(boundary)
+                if d.config.RESOLVE_TAILCALLS:
+                    # the cut below is what recovers the next function: it ends the caller
+                    # here, and the ordinary candidate machinery then reaches the entry with
+                    # better extents than a tailcall-flagged candidate does. Seeding one as
+                    # well measured worse on both AArch64 corpora, so it follows the flag the
+                    # shared engine gates its own tailcall work behind.
+                    d.fc_manager.addTailcallCandidate(boundary)
                 self._cutFunctionBeforeInstruction(state, previous_instruction[0], i_address)
                 return True
 

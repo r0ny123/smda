@@ -94,6 +94,27 @@ class NoReturnCallBoundaryTest(unittest.TestCase):
         recovered = {function.offset for function in report.getFunctions()}
         self.assertEqual(sorted(set(self.MERGED_STARTS) - recovered), [])
 
+    def testTheBoundaryIsTheCutAndNotASeededCandidate(self):
+        # the fall-through path cuts the caller and leaves the entry to the ordinary
+        # candidate machinery; seeding a tailcall candidate as well measured worse on
+        # both AArch64 corpora, so it follows RESOLVE_TAILCALLS. Turning that on must
+        # not lose any of the functions the cut recovers.
+        config = SmdaConfig()
+        config.TIMEOUT = 300
+        buffer = _decode(FIXTURE)
+        off = Disassembler(config).disassembleUnmappedBuffer(buffer)
+        seeded = SmdaConfig()
+        seeded.TIMEOUT = 300
+        seeded.RESOLVE_TAILCALLS = True
+        on = Disassembler(seeded).disassembleUnmappedBuffer(buffer)
+        self.assertEqual(off.status, "ok")
+        self.assertEqual(on.status, "ok")
+        recovered = {function.offset for function in off.getFunctions()}
+        self.assertEqual(sorted(set(self.MERGED_STARTS) - recovered), [])
+        # control: the flag really does change what is seeded, so the assertion above is
+        # not passing because both runs are the same run
+        self.assertNotEqual(recovered, {function.offset for function in on.getFunctions()})
+
     def testTheCallerBeforeThemIsStillOneFunction(self):
         # control: the rule cuts at the entry that follows the call, not at every call
         config = SmdaConfig()
