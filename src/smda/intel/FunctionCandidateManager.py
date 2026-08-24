@@ -99,6 +99,7 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         super().__init__(config)
         self.pdata_start_addresses = set()
         self.pdata_end_addresses = set()
+        self._seeded_prologues = ()
         self._retained_pad = None
 
     def init(self, disassembly, cbAnalysisTimeout=None):
@@ -577,6 +578,25 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 return True
         return False
 
+    def _opensInsideAnEarlierPrologue(self, binary, offset, candidate_addr):
+        """Whether a seeded prologue ends exactly where this match begins.
+
+        A prologue is a function's opening instructions, so the address just past
+        one is inside that function's body rather than the start of another.
+        clang opens a frame with `push rbp; mov rbp, rsp` and follows it with the
+        callee-saved run `push r15; push r14`, which is on the seeded list too:
+        matched there it books the body of a function the scan already found.
+        Requiring the earlier match to be a candidate keeps this from firing on a
+        byte coincidence, and mirrors the hotpatch adjustment below.
+        """
+        for prologue in self._seeded_prologues:
+            length = len(prologue)
+            if offset < length or binary[offset - length : offset] != prologue:
+                continue
+            if ((candidate_addr - length) & self.getBitMask()) in self.candidates:
+                return True
+        return False
+
     def _seedPrologueMatches(self, pattern):
         """returns True once the analysis timeout trips, so callers can stop scanning
         further patterns instead of each one re-discovering the timeout on its own first match."""
@@ -611,6 +631,8 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
             candidate_addr = (self.disassembly.binary_info.base_addr + offset) & self.getBitMask()
             if not self._passesCodeFilter(candidate_addr):
                 continue
+            if self._opensInsideAnEarlierPrologue(binary, offset, candidate_addr):
+                continue
             # MSVC precedes `push ebp; mov ebp, esp` with a `mov edi, edi` hotpatch pad, and the
             # pad is the function's entry -- a bare prologue match two bytes into one names the
             # body, not a function start. The pad is itself a DEFAULT_PROLOGUES entry scanned
@@ -627,6 +649,11 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         return False
 
     def locatePrologueCandidates(self):
+        # the patterns this scan seeds, so a later match can tell whether it begins
+        # where an earlier one ends and is therefore inside that function's body
+        self._seeded_prologues = tuple(DEFAULT_PROLOGUES)
+        if self.bitness == 64:
+            self._seeded_prologues += tuple(DEFAULT_PROLOGUES_64)
         # next check for the default function prologue regardless of references
         for re_prologue in DEFAULT_PROLOGUES:
             if self._seedPrologueMatches(re.escape(re_prologue)):
