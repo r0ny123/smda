@@ -2058,3 +2058,34 @@ Worth recording about the runs themselves: three consecutive benchmark runs were
 next push** before they finished, because the workflow sets `cancel-in-progress`. Pushing every
 finished piece of work means never seeing a completed run of the thing just pushed. The reading above
 only exists because the branch was left alone for twenty minutes.
+
+---
+
+## 2026-08-25 — what is actually producing the Rust false positives
+
+Section 13's third item names the next step rather than guessing: histogram the surviving interior
+splits by the pass that booked them, the way the `41 57` seed was found. Instrumenting every
+`add*Candidate` entry point and attributing each false positive to the first pass that books it,
+over all 24 Rust cells:
+
+| pass that booked it | false positives | share |
+|---|---|---|
+| `addGapCandidate` | **6,093** | **70.2%** |
+| `addReferenceCandidate` | 2,215 | 25.5% |
+| `addPrologueCandidate` | 370 | 4.3% |
+
+**8,678 in total**, and the answer refutes the item's own framing. It reads "the class is the same and
+the byte pattern is not", which assumes what remains is another seed. The prologue scan — the source
+the interior-prologue fix targeted, and the only one a byte pattern can reach — now accounts for
+**4.3%**. A second pattern, however well chosen, is bounded at 370 of 8,678.
+
+Seven in ten are gap analysis, and one in four is a reference the analysis believed. Neither is a
+byte-level phenomenon: the gap scan carves entries out of regions nothing claimed, and the reference
+source books whatever an instruction pointed at. So the ceiling in that item — 13 points to match the
+32-bit ByteWeight set — is not reachable through the seeding scan at all, and the next measurement is
+what those 6,093 gap candidates look like, not which bytes they start with.
+
+The instrument is the same one that attributed the AArch64 veneers and the nopie landing pads: patch
+each `add*Candidate` method to record the first pass that books an address, then intersect with the
+false-positive set. It costs one run of the corpus and it has now redirected three investigations
+that reading the code had pointed the wrong way.

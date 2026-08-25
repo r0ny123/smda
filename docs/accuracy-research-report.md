@@ -548,9 +548,16 @@ Section 9 removed 790 of the Rust corpus' false positives and took it from PPV 7
 which is still the lowest of any family here. 95.3% of what remains are interior splits, so the class
 is the same and the byte pattern is not.
 
-**Ceiling:** matching the 92.0 the 32-bit ByteWeight set scores is another 13 points, and nothing here
-says one mechanism accounts for the rest — the next step is to histogram the remaining interior
-splits by candidate source the way the `41 57` seed was found, not to guess a second pattern.
+That histogram has since been taken, and it moves this item off the seeding scan entirely. Attributing
+all 8,678 surviving false positives over the 24 cells to the pass that first books each address:
+**`addGapCandidate` 6,093 (70.2%)**, `addReferenceCandidate` 2,215 (25.5%), `addPrologueCandidate`
+**370 (4.3%)**. The prologue scan is the only source a byte pattern can reach, so a second pattern is
+bounded at 370 of 8,678 however well chosen.
+
+**Ceiling:** matching the 92.0 the 32-bit ByteWeight set scores is another 13 points, and it is not
+reachable through the seeding scan. Seven in ten of what remains is the gap scan carving entries out
+of regions nothing claimed, and one in four is a reference the analysis believed; the next measurement
+is what those 6,093 gap candidates look like, not which bytes they start with.
 
 ### 4. Go/AArch64: what is left of the tailcall path after section 10
 
