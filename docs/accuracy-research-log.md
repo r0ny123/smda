@@ -2773,3 +2773,34 @@ Two limits, both load-bearing:
 
 As a filter it would cost 44 real functions on the dumps to remove 672 spurious ones, a 15 : 1 trade
 — better than anything else measured on this corpus, and still not free.
+
+### The proxy the engine could compute, and why it does not work
+
+The test above answered "is the referencing instruction real code" from ground truth. The engine
+cannot. The nearest thing it can ask is "did I decode an instruction at that address", so the two
+were measured side by side on the same 8,836 candidates:
+
+| malpedia | count | truth: the reference is real code | proxy: the engine decoded it |
+|---|---|---|---|
+| real | 8,077 | 8,033 (99.5%) | 7,989 (98.9%) |
+| **spurious** | 759 | **87 (11.5%)** | **624 (82.2%)** |
+
+| split by | precision when yes | precision when no |
+|---|---|---|
+| ground truth | **98.9%** (n=8,120) | **6.1%** (n=716) |
+| the proxy | 92.8% (n=8,613) | 39.5% (n=223) |
+
+**The proxy collapses the separation from sixteen-fold to 2.3-fold**, and the reason is exact: it
+answers "did I decode this", and in these cases the engine's own decoding is the thing that is
+wrong. 82% of the spurious references point at an instruction SMDA decoded — it decoded the
+misdecode. Asking it to check its own work catches almost nothing.
+
+As a filter the proxy would remove 135 spurious candidates for 88 real ones, 1.5 : 1, against the
+ground-truth version's 15 : 1. It is not usable.
+
+**This closes the thread with a negative that is worth more than the rule would have been.** The
+signal separating these false positives is real, large and consistent — and it is not visible from
+inside the engine, because the only instrument the engine has is the one that produced the error.
+Anything that reaches this class has to bring evidence from outside the disassembly: a declared
+entry, an unwind record, a symbol, a relocation. Which is the same conclusion the landing-pad work
+and the gap-scan position family both arrived at by different routes, now with a mechanism attached.
