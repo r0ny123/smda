@@ -597,9 +597,12 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 return True
         return False
 
-    def _seedPrologueMatches(self, pattern):
+    def _seedPrologueMatches(self, pattern, refuse_declared_interior=False):
         """returns True once the analysis timeout trips, so callers can stop scanning
-        further patterns instead of each one re-discovering the timeout on its own first match."""
+        further patterns instead of each one re-discovering the timeout on its own first match.
+
+        `refuse_declared_interior` declines a match that begins inside a range the image's own
+        `.eh_frame` declares; see `locatePrologueCandidates` for why only one pattern sets it."""
         binary = self.disassembly.binary_info.binary
         for match_count, prologue_match in enumerate(re.finditer(pattern, binary)):
             if match_count % _TIMEOUT_POLL_INTERVAL == 0 and self._candidateTimeoutTripped():
@@ -633,6 +636,8 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 continue
             if self._opensInsideAnEarlierPrologue(binary, offset, candidate_addr):
                 continue
+            if refuse_declared_interior and self.opensInsideDeclaredFdeRange(candidate_addr):
+                continue
             # MSVC precedes `push ebp; mov ebp, esp` with a `mov edi, edi` hotpatch pad, and the
             # pad is the function's entry -- a bare prologue match two bytes into one names the
             # body, not a function start. The pad is itself a DEFAULT_PROLOGUES entry scanned
@@ -661,7 +666,13 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         if self.bitness == 64:
             # extended GCC/Clang/MSVC AMD64 prologue family: a CET landing pad (endbr64) that may
             # prefix the real prologue, plus exact stack-frame openers.
-            if self._seedPrologueMatches(re.escape(ENDBR64_BYTES)):
+            # A landing pad marks every indirect-branch target, not every function, so gcc emits
+            # one at each jump-table destination and each exception landing pad inside a body.
+            # The image says which is which: an FDE covers one routine, so a pad that is not its
+            # range's own start is inside that routine. This is the only seeded pattern that
+            # names a place a branch can arrive rather than a way a function opens, so it is the
+            # only one the interior test applies to.
+            if self._seedPrologueMatches(re.escape(ENDBR64_BYTES), refuse_declared_interior=True):
                 return
             for re_prologue in DEFAULT_PROLOGUES_64:
                 if self._seedPrologueMatches(re.escape(re_prologue)):

@@ -59,8 +59,12 @@ class FunctionCandidateManager:
         # backstop against memory usage explosion during candidate identification
         self._candidate_cap_logged = False
         self._cb_analysis_timeout = None
+        self._eh_frame_fde_ranges = None
+        self._eh_frame_fde_starts = []
 
     def init(self, disassembly, cbAnalysisTimeout=None):
+        self._eh_frame_fde_ranges = None
+        self._eh_frame_fde_starts = []
         if disassembly.binary_info.code_areas:
             self._code_areas = disassembly.binary_info.code_areas
         self.disassembly = disassembly
@@ -518,22 +522,66 @@ class FunctionCandidateManager:
                 continue
             yield start
 
-    def _ehFrameFunctionStarts(self):
+    def ehFrameFdeRanges(self):
+        """(start, end) for every FDE the image's own `.eh_frame` section declares.
+
+        Only the section carries each record's length. `.eh_frame_hdr`'s search table names
+        starts alone, so an image reduced to its segments has no ranges here and callers that
+        need an extent are inert on it rather than wrong. Decoded once per binary because the
+        section is walked record by record in Python.
+        """
+        if getattr(self, "_eh_frame_fde_ranges", None) is not None:
+            return self._eh_frame_fde_ranges
+        ranges = []
         binary_info = self.disassembly.binary_info
-        pointer_size = 8 if binary_info.bitness == 64 else 4
-        section_starts = set()
         lief_binary = binary_info.getLiefBinary()
         if isinstance(lief_binary, lief.ELF.Binary):
             eh_frame = next((section for section in lief_binary.sections if section.name == ".eh_frame"), None)
             if eh_frame is not None and eh_frame.virtual_address and eh_frame.size:
                 section_bytes = self.disassembly.getBytes(eh_frame.virtual_address, eh_frame.size)
                 if section_bytes:
-                    section_starts = {
-                        fde_range[0]
-                        for fde_range in decodeEhFrameFdeRanges(
+                    pointer_size = 8 if binary_info.bitness == 64 else 4
+                    ranges = sorted(
+                        (start, start + length)
+                        for start, length in decodeEhFrameFdeRanges(
                             bytes(section_bytes), eh_frame.virtual_address, pointer_size=pointer_size
                         )
-                    }
+                        if length
+                    )
+        self._eh_frame_fde_ranges = ranges
+        self._eh_frame_fde_starts = [start for start, _ in ranges]
+        return ranges
+
+    def declaredFdeRangeContaining(self, addr):
+        """The declared FDE range `addr` falls inside, or None when it starts one or is outside.
+
+        The unwinder's own record says an interior address belongs to the routine the range
+        begins at, so it is not an entry. Ranges are deliberately not merged: consecutive
+        functions are laid out end-to-start, and merging adjacent ones collapses the text
+        section into a handful of spans where every address but the first looks interior.
+        """
+        ranges = self.ehFrameFdeRanges()
+        starts = self._eh_frame_fde_starts
+        index = bisect.bisect_right(starts, addr) - 1
+        while index >= 0:
+            start, end = ranges[index]
+            if start < addr < end:
+                return start, end
+            # Ranges are sorted by start and a preceding one can still cover `addr` only while
+            # its own end does; once one ends at or before it, no earlier one reaches further.
+            if end <= addr and index and ranges[index - 1][1] <= addr:
+                break
+            index -= 1
+        return None
+
+    def opensInsideDeclaredFdeRange(self, addr):
+        """Whether `addr` falls inside a declared FDE range without being that range's start."""
+        return self.declaredFdeRangeContaining(addr) is not None
+
+    def _ehFrameFunctionStarts(self):
+        binary_info = self.disassembly.binary_info
+        pointer_size = 8 if binary_info.bitness == 64 else 4
+        section_starts = {fde_range[0] for fde_range in self.ehFrameFdeRanges()}
         # The two sources are unioned rather than tried in order. A memory image keeps its
         # program headers but not its section table, so .eh_frame_hdr is the only route
         # there; and the section decoder skips records whose CIE it cannot read, so a
