@@ -475,11 +475,26 @@ Each item names what it would be worth and on which corpus, so nothing here is r
 plausibility alone. The first two have a mechanism established and a candidate change measured
 against it; the rest have a measurement and no fix yet.
 
-### 1. AArch64 recall on code with no symbol oracle
+### 1. AArch64 precision, and the recall gap that is not one
 
-Micro recall **91.246** on eleven real ARM64 Mach-O binaries, against 99.745 on the 64-bit ByteWeight
-set — still the largest architecture gap measured anywhere in this work after the boundary rule in
-section 8 closed a point of it. It is invisible on the Go family, where the pclntab names every
+**This item was ranked on the wrong axis, and section 21's corpus is what says so.** It read micro
+recall **91.246** on eleven real ARM64 Mach-O binaries against 99.745 on the 64-bit ByteWeight set and
+called that the largest architecture gap in this work. Those are two different populations — real
+macOS images with linker truth against MSVC-built open-source PEs — and holding source, programs,
+variants and compiler family constant says something else. Over 63 matched cells:
+
+| | macro PPV | macro TPR |
+|---|---|---|
+| `gcc-x64` | 94.684 | 96.899 |
+| `gcc-arm64` | **77.594** | 95.364 |
+
+Recall differs by **1.5** points and precision by **17.1**, and micro recall on the AArch64 corpus is
+97.750 against the x86 matrix's 94.958. The architecture gap is a precision gap. What follows below
+is the Mach-O recall analysis as it was recorded, which remains true of that corpus and is what the
+fixes in sections 8 and 11 were built from; it is no longer evidence that AArch64 recall is
+structurally behind intel's.
+
+It is invisible on the Go family, where the pclntab names every
 function and recall is essentially perfect, so it took a corpus whose truth comes from a linker to
 see it at all.
 
@@ -754,13 +769,15 @@ Filter `all`, arithmetic macro mean, one run of the whole harness at the last co
 | Bao_Dumped msvc10-64-d | 56 | 98.874 | 99.811 | 99.338 | 106,679 | 108,455 |
 | Plohmann malpedia itw | 57 | 92.643 | 98.561 | 95.144 | 21,924 | 24,270 |
 | Built C/C++ (gcc, clang, mingw) | 260 | 92.623 | 95.525 | 93.875 | 213,441 | 225,405 |
+| Built C/C++ AArch64 (gcc cross) | 72 | 76.676 | 95.939 | 84.852 | 56,127 | 69,108 |
 | Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 162,621 | 171,338 |
 | Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
 | Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
 | ARM64 Mach-O (linker truth) | 11 | 94.220 | 96.711 | 95.074 | 2,753 | 2,767 |
 
-**875,544 truth functions across ten corpora, 922,693 detections, no failed sample.** Five of the ten
-corpora and 420,073 of those truth functions did not exist for this project before this branch.
+**931,671 truth functions across eleven corpora, 991,801 detections, no failed sample.** Six of the
+eleven corpora and 476,200 of those truth functions did not exist for this project before this
+branch.
 
 ## 18. Summary of what landed
 
@@ -901,3 +918,56 @@ The declared-range predicate lives in the shared candidate manager and would app
 ELF with 276 readable ranges has no ground truth, so a change there could only be scored by counting
 recovered addresses — which section 16 records as the wrong instrument. An AArch64 ELF corpus with
 symbol truth is the prerequisite, and it is the first entry on the agenda that this fix creates.
+
+## 21. Corpus added: AArch64 ELF with compiler truth
+
+The fix in section 20 was recorded with its AArch64 sibling unmeasurable, and the reason was that
+nothing here reached it: Go's arm64 cells carry zero FDE ranges, the ARM64 Mach-O corpus has no
+`.eh_frame` section, and the one bundled AArch64 ELF has no ground truth. `native-arm64` is that
+prerequisite — the same ten C and C++ programs and the same seven variants through
+`gcc-aarch64-linux-gnu`, truth from the same compiler's symbol table. 72 cells of 80; the eight
+failures are all `xxhash`, whose `XXHSUM_DISPATCH` is x86-specific, and the manifest says so.
+
+It is its own corpus rather than extra cells of `native`, so the x86 matrix stays comparable to the
+figures already published for it rather than becoming a mixed-architecture population.
+
+**n=72: PPV 76.676, TPR 95.939, F1 84.852**, 56,127 truth functions, 69,108 detections.
+
+### What it re-ranks
+
+Section 13's first item is corrected by it, and the correction is in that section. Holding source,
+programs, variants and compiler family constant over 63 matched cells, recall differs between the
+architectures by 1.5 points and precision by 17.1 — the gap this project has been calling a recall
+gap is a precision gap, and the Mach-O figure that suggested otherwise was comparing two populations.
+
+### The BTI sibling: measured, and rejected by the gate
+
+The corpus carries an `O2-bti` cell because nothing else here has the construct in any density:
+**3,830** BTI landing pads across its nine binaries against **21** in the same programs built without
+`-mbranch-protection`, which is the control that the cell measures what it claims to.
+
+Extending the declared-range test to `is_bti_landing_pad` — today guarded only by a `code_map` check
+that cannot see a not-yet-decoded region — measures on those cells: **2,068 of 2,068** false-positive
+pads sit strictly inside a declared FDE range, and **0** true positives opening with a pad do. That
+is a cleaner split than the x86 case in section 20, which touched 2,131 real functions, all of them
+PLT stubs.
+
+End to end, n=72: PPV 76.676 → **78.050**, F1 84.852 → 85.828, **2,861 false positives removed** —
+and **one true positive lost**, `0xe1744` on `sqlite3_gcc-arm64_O2-bti`. TPR 95.9386 → 95.9379.
+
+`summarize.py --compare` rejects it and the change is reverted. A TPR drop on any corpus is the
+stated criterion and it carries no size threshold. For whoever revisits it: `0xe1744` opens `paciasp`
+rather than a pad and sits in no declared range, so the rule refused nothing about it — it is the same
+second-order class as the seven section 20 costs, and recovering it needs the pad-to-victim chain
+instrumented rather than a narrower predicate. Whether 2,861 false positives for one function in
+56,127 is a trade worth taking is a judgement about the gate, not about the evidence.
+
+### The measurement that was wrong first
+
+The first BTI run reported a clean **0 of 2,068** — the opposite answer — behind three controls that
+all looked healthy: the pads present, 2,068 of them recovered as false positives, and 124 to 1,777
+FDE ranges decoded per image. The script built its per-file record with two dictionary keys of the
+same name, so the false-positive column was silently overwritten by the true-positive one and every
+figure it printed for that column was the wrong quantity. Re-deriving the same number out of a
+second, independent script is what caught it. Controls establish that a probe ran; they say nothing
+about whether the line that reported it computed what it claimed.
