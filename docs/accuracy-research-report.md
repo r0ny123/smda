@@ -488,8 +488,9 @@ variants and compiler family constant says something else. Over 63 matched cells
 | `gcc-x64` | 94.684 | 96.899 |
 | `gcc-arm64` | **77.594** | 95.364 |
 
-Recall differs by **1.5** points and precision by **17.1**, and micro recall on the AArch64 corpus is
-97.750 against the x86 matrix's 94.958. The architecture gap is a precision gap. What follows below
+Recall differs by **1.5** points and precision by **17.1**. Pooled over the same 63 cells, micro
+recall is **97.750** on AArch64 against **96.170** on x86 — AArch64 is *ahead* — while micro precision
+is 81.559 against 90.464. The architecture gap is a precision gap. What follows below
 is the Mach-O recall analysis as it was recorded, which remains true of that corpus and is what the
 fixes in sections 8 and 11 were built from; it is no longer evidence that AArch64 recall is
 structurally behind intel's.

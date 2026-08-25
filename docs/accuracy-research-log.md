@@ -1937,9 +1937,17 @@ PEs — and holding source, programs, variants and compiler family constant says
 | `gcc-x64` | 94.684 | 96.899 |
 | `gcc-arm64` | **77.594** | 95.364 |
 
-**Recall differs by 1.5 points; precision differs by 17.1.** Micro recall on the AArch64 corpus is
-97.750, higher than the x86 matrix's 94.958. Whatever the Mach-O corpus is measuring, it is not a
-recall property of the instruction set, and the agenda's first item is ranked on the wrong axis.
+**Recall differs by 1.5 points; precision differs by 17.1.** Pooled over the same 63 cells, micro
+recall is 97.750 on AArch64 against 96.170 on x86 — AArch64 ahead — and micro precision 81.559
+against 90.464. Whatever the Mach-O corpus is measuring, it is not a recall property of the
+instruction set, and the agenda's first item is ranked on the wrong axis.
+
+The first version of this entry compared AArch64's matched-cell micro recall against the *whole* x86
+matrix's 94.958 — a 63-cell figure against a 260-cell one. That is the two-differently-filtered-
+populations error this harness was built to stop, made while correcting the same error in the
+agenda's ranking. Matched properly the conclusion is stronger rather than weaker, which is luck and
+not vindication: the check that caught it was re-deriving every figure this session published
+against the result files, not noticing the prose read oddly.
 
 ### The BTI sibling, measured and rejected by the gate
 
@@ -2028,3 +2036,25 @@ did not implement it — the same duck-type gap that made `MockBinaryInfo` gain 
 when the exception-table fix landed. Both now return `None`, which is what a raw buffer with no
 container declares. Eight tests failed and named the accessor outright, so the suite located it in
 one run.
+
+---
+
+## 2026-08-25 — the hoist, as CI reads it
+
+First benchmark run against the hoisted tree, both sides on one runner:
+
+| | median | 95% CI | p | base sum | pr sum |
+|---|---|---|---|---|---|
+| before the hoist (`68ce20c`) | −2.31% | [−3.30%, −1.19%] | 0.0000 | 294.49 s | 298.70 s |
+| its src twin (`0b5ca6c`) | +0.06% | [−0.90%, +0.55%] | 0.9865 | 246.12 s | 251.73 s |
+| after the hoist (`e42e0e6`) | **−0.83%** | [−1.22%, 0.00%] | 0.0720 | 206.97 s | **205.42 s** |
+
+The sum of best times crosses over for the first time — the PR side is 1.5 s *ahead* of base rather
+than 4 s behind. That is consistent with the local finding rather than confirmation of it: the middle
+row is two runs of byte-identical source disagreeing by 2.4 points, so this instrument cannot resolve
+an effect of this size on its own. What it can say is that nothing large is left.
+
+Worth recording about the runs themselves: three consecutive benchmark runs were **cancelled by the
+next push** before they finished, because the workflow sets `cancel-in-progress`. Pushing every
+finished piece of work means never seeing a completed run of the thing just pushed. The reading above
+only exists because the branch was left alone for twenty minutes.
