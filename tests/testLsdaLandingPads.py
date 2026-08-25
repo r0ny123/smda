@@ -95,10 +95,17 @@ class _LandingPadFixtureCase:
         config.CALCULATE_NESTING = False
         config.CALCULATE_HASHING = False
         config.USE_LSDA_LANDING_PADS = use_landing_pads
-        with tempfile.NamedTemporaryFile(suffix=".elf") as handle:
+        # analysed through a file rather than a buffer so the ELF header picks the architecture.
+        # The handle is closed before the path is handed on: Windows refuses a second open on a
+        # file another handle still holds, and the loader reports that as an empty result rather
+        # than as an error, so the failure would arrive as "this fixture declares no functions"
+        with tempfile.NamedTemporaryFile(suffix=".elf", delete=False) as handle:
             handle.write(self.data)
-            handle.flush()
-            report = Disassembler(config).disassembleFile(handle.name)
+            temp_path = handle.name
+        try:
+            report = Disassembler(config).disassembleFile(temp_path)
+        finally:
+            os.unlink(temp_path)
         return {function.offset for function in report.getFunctions()}
 
     def testNoDeclaredPadIsReportedAsAFunctionWhenTheRuleIsOn(self):
