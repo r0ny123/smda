@@ -626,9 +626,17 @@ downstream consumers.
 ### 8. Three headerless dumps still get their bitness wrong
 
 `geodo`, `hamweq` and `tinba` carry no header, so the fix landed in section 5 cannot reach them, and
-the second statistic tried instead was measured worse (section 6). Attacking it needs decoding coverage in
-both modes rather than another byte statistic. **Ceiling:** three of 57 samples on one corpus, and
-only under `--bitness auto`; nothing at all under the configuration published figures use.
+the second statistic tried instead was measured worse (section 6). Decoding coverage in both modes
+was the next thing to try and has since been **built and rejected**: counting where a sweep has to
+restart separates the classes by an order of magnitude over `.text` sections, and is wrong on 9 of
+12 whole 64-bit images, because non-code bytes fail to decode far more often as 64-bit than as
+32-bit. The ratio tracks how much of a buffer is not code rather than what mode it is; the nine
+32-bit dumps agreed with it because the bias points at 32 and they happen to be 32. A decode
+statistic can work, but only over code, and a headerless dump is exactly the case where nothing
+declares where the code is — which puts this downstream of establishing code extent rather than
+beside it. `hamweq` is out of reach either way: it stumbles once in each mode over 12 KB.
+**Ceiling:** three of 57 samples on one corpus, and only under `--bitness auto`; nothing at all
+under the configuration published figures use.
 
 ### 9. Corpus hygiene
 
