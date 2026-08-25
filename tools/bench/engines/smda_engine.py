@@ -29,7 +29,23 @@ class SmdaEngine:
             "version": self.version,
             "timeout": self.config.TIMEOUT,
             "module": os.path.dirname(os.path.abspath(smda.__file__)),
+            "config_overrides": self.nonDefaultConfig(),
         }
+
+    def nonDefaultConfig(self) -> Dict[str, object]:
+        """Every SmdaConfig setting this run does not take from the class default.
+
+        A result that does not say which settings produced it cannot be compared with another,
+        and the settings worth measuring are exactly the ones that are off by default.
+        """
+        changed = {}
+        for name in dir(SmdaConfig):
+            if not name.isupper():
+                continue
+            default = getattr(SmdaConfig, name)
+            if isinstance(default, (bool, int, float, str)) and getattr(self.config, name) != default:
+                changed[name] = getattr(self.config, name)
+        return changed
 
     def run(self, path: str, base_addr: Optional[int] = None, bitness: Optional[int] = None) -> Tuple[Set[int], Dict]:
         disassembler = Disassembler(config=self.config)

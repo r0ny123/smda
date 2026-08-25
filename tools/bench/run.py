@@ -38,11 +38,37 @@ _WORKER_KIND = None
 _WORKER_OPTIONS: Dict[str, object] = {}
 
 
+def smdaConfigFrom(options: Dict[str, object]) -> SmdaConfig:
+    """An SmdaConfig carrying the `--set NAME=VALUE` overrides this run asked for.
+
+    Several accuracy options ship off by default because they were measured as a trade rather
+    than a win. Measuring one again should not mean editing the library, so the harness sets
+    them here and records them in the result, which is what makes such a run reproducible from
+    the repository alone.
+    """
+    config = SmdaConfig()
+    for name, raw in dict(options.get("config_overrides") or {}).items():
+        current = getattr(SmdaConfig, name)
+        if isinstance(current, bool):
+            value: object = raw.strip().lower() in {"1", "true", "yes", "on"}
+        elif isinstance(current, int):
+            value = int(raw, 0)
+        elif isinstance(current, float):
+            value = float(raw)
+        else:
+            value = raw
+        setattr(config, name, value)
+    return config
+
+
 def buildEngine(kind: str, options: Dict[str, object]):
     if kind == "smda":
         from bench.engines.smda_engine import SmdaEngine
 
-        return SmdaEngine(timeout=int(options.get("timeout", SmdaConfig.TIMEOUT)))
+        return SmdaEngine(
+            config=smdaConfigFrom(options),
+            timeout=int(options.get("timeout", SmdaConfig.TIMEOUT)),
+        )
     if kind == "ghidra":
         from bench.engines.ghidra_engine import GhidraEngine
 
@@ -133,6 +159,16 @@ def parseArgs(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="drop samples whose ground truth is recorded as describing a different build; off by "
         "default because every published figure for these corpora includes them",
     )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        dest="config_set",
+        help="override an SmdaConfig attribute for this run, e.g. --set USE_LSDA_LANDING_PADS=1; "
+        "repeatable, applies to the smda engine only, and every override is recorded in the "
+        "result JSON so a number can be traced back to the settings that produced it",
+    )
     parser.add_argument("--limit", type=int, default=0, help="analyse at most this many samples per corpus")
     parser.add_argument(
         "--max-failures",
@@ -151,7 +187,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     if unknown:
         print(f"unknown corpus keys: {unknown}", file=sys.stderr)
         return 2
-    options = {"timeout": args.timeout, "ghidra_dir": args.ghidra_dir, "bitness": args.bitness}
+    overrides = {}
+    for assignment in args.config_set:
+        name, _, raw = assignment.partition("=")
+        name = name.strip()
+        if not _ or not hasattr(SmdaConfig, name):
+            print(f"--set expects NAME=VALUE naming an SmdaConfig attribute, got {assignment!r}", file=sys.stderr)
+            return 2
+        overrides[name] = raw
+    options = {
+        "timeout": args.timeout,
+        "ghidra_dir": args.ghidra_dir,
+        "bitness": args.bitness,
+        "config_overrides": overrides,
+    }
+    if overrides:
+        print(f"[config] smda overrides: {overrides}", file=sys.stderr)
 
     rows: List[str] = []
     all_failures: List[str] = []

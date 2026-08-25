@@ -147,6 +147,24 @@ published comparisons did. `--bitness auto` withholds it, which is what a caller
 unknown dump actually gets. The two answer different questions and results are written to
 separate files so they cannot be mistaken for one another.
 
+## Measuring an off-by-default option
+
+Several accuracy options ship off because measurement showed a trade rather than a win. `--set`
+turns one on for a run without editing the library, so the number can be reproduced from this
+repository alone:
+
+```
+tools/bench/run.py --corpus native,native-arm64,rust --engine smda --out results/off/
+tools/bench/run.py --corpus native,native-arm64,rust --engine smda --set USE_LSDA_LANDING_PADS=1 --out results/on/
+tools/bench/summarize.py results/on/ --compare results/off/
+```
+
+`--set NAME=VALUE` is repeatable, names any `SmdaConfig` attribute, and applies to the `smda`
+engine only. Booleans accept `1/true/yes/on` and their negations; integers accept the base they
+are written in, so `0x100` and `256` are the same value. Every override lands in the result JSON
+under the engine's `config_overrides`, and a run at stock settings records an empty one — a result
+that does not state its settings cannot be compared with another.
+
 ## The harness asserts its own success
 
 A sample whose engine errored, timed out, or returned nothing is counted as a failure, listed, and
