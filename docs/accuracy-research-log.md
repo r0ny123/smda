@@ -2938,3 +2938,43 @@ support, not a finding.
 The 487 that jump to a labelled entry are a separate and smaller result: those are real code the
 symbol table does not name, the same completeness effect already measured on the malware corpus,
 and they are not false positives at all.
+
+### Confirmed: they are declared landing pads, and the decoder had one contract bug
+
+The `.eh_frame` walk done properly — each FDE's augmentation read for its LSDA pointer, each LSDA's
+`LPStart` defaulting to that FDE's function start:
+
+| 28 64-bit C++ ELF cells | |
+|---|---|
+| landing pads decoded from the LSDAs | 25,525 |
+| spurious `endbr64` detections | 4,818 |
+| **spurious that are declared landing pads** | **4,757 (98.7%)** |
+| **control: real functions declared as pads** | **0** |
+
+The control is the part that makes this a result rather than a coincidence: a landing pad is interior
+by construction, so a correct decode must never declare a real function start as one, and it declares
+none of 23,106.
+
+**The third bug was a contract, not a slip.** After fixing `LPStart` and the return-address-register
+read, every LSDA still failed. The cause: `_read_encoded_value` in the in-tree `.eh_frame` decoder
+deliberately refuses `uleb128`, and says so — *"uleb128/sleb128-encoded pointers are rare in
+.eh_frame; not supported"*. True of an FDE pointer, and false of a call-site table, where uleb128 is
+what gcc emits. Reusing a helper across the boundary its own comment draws returned `None` on every
+record, and the empty result then read as "this binary declares no landing pads". Anyone extending
+that decoder to LSDAs has to widen the reader first.
+
+### What this is worth
+
+The C/C++ corpus carries 10,389 false positives across its 140 ELF cells. **4,757 of them — 45.8% —
+are addresses the image itself declares as exception landing pads.** A rule that declines to seed a
+prologue candidate at a declared landing pad:
+
+- reads a fact the compiler wrote down, not one the disassembler inferred, which is exactly what the
+  earlier thread concluded anything reaching this class would have to do
+- cannot cost a true positive by construction, and the control says so empirically: 0 of 23,106 real
+  functions are declared pads
+- also repairs the boundaries of the ~1,846 functions these pads were splitting
+
+It is the same shape as the `.eh_frame` FDE-range rule already landed, one level more precise: that
+one asks "is this address inside a declared function", this one asks "is this address a place the
+unwinder is declared to jump to".
