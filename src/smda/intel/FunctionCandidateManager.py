@@ -604,6 +604,9 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         `refuse_declared_interior` declines a match that begins inside a range the image's own
         `.eh_frame` declares; see `locatePrologueCandidates` for why only one pattern sets it."""
         binary = self.disassembly.binary_info.binary
+        # Resolved once rather than per match: an image with no readable `.eh_frame` declares no
+        # ranges, so the test below has no work to do on any of them and should cost nothing.
+        refuse_declared_interior = refuse_declared_interior and bool(self.ehFrameFdeRanges())
         for match_count, prologue_match in enumerate(re.finditer(pattern, binary)):
             if match_count % _TIMEOUT_POLL_INTERVAL == 0 and self._candidateTimeoutTripped():
                 return True

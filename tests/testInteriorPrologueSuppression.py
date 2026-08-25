@@ -36,6 +36,11 @@ class _BufferBinaryInfo:
     def getExceptionDirectory(self):
         return None
 
+    def getLiefBinary(self):
+        # A raw buffer has no container, so the declared-range lookup finds no `.eh_frame`
+        # and the rules built on it are inert here -- which is what a memory dump also sees.
+        return None
+
 
 def seededStarts(buffer, bitness=64):
     manager = FunctionCandidateManager(SmdaConfig())

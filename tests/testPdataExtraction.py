@@ -112,6 +112,11 @@ class MockBinaryInfo:
         # section name is the only evidence of where the table is
         return None
 
+    def getLiefBinary(self):
+        # nor a parsed container, so the declared-range lookup finds no `.eh_frame` and the
+        # rules built on it are inert here
+        return None
+
 
 class PdataExtractionTestSuite(unittest.TestCase):
     def test_pdata_candidates(self):
