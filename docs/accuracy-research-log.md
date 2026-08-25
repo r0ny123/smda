@@ -2621,3 +2621,79 @@ the same bucket the predicate refuses, and the same bucket that holds 18 of the 
 admissions. Separating two from eighteen on a corpus of this size is not a rule, it is a coin toss
 with a good story, so no third clause is proposed. The predicate's cost is 2 functions in 21,924 and
 that is where it stands.
+
+---
+
+## 2026-08-25 — the malware corpus' precision is mostly a truth gap, not over-detection
+
+Two questions about the corpus itself, both answerable from what it already ships.
+
+### Is truth landing outside an executable section a defect?
+
+No, and it costs almost nothing. The harness flags 12 of 57 dumps as holding truth outside every
+area SMDA treats as code. Measuring recall separately inside and outside those areas:
+
+| | truth | recovered |
+|---|---|---|
+| inside SMDA's code areas | 6,499 | 6,469 — **99.54%** |
+| outside them | 333 | 312 — **93.69%** |
+
+`dyre`, the worst-flagged sample at 174 of 461, recovers **173 of its 174** outsiders; they sit in
+`.rsrc`, which is where a packed sample keeps a payload. `heloag` is the extreme case — its `.text`
+carries no executable characteristic at all and it has an `.aspack` section — and it is not flagged,
+because SMDA's own loader treats it as code anyway, which is the right answer for a dump.
+
+So the flag means "this image's section table does not describe where its code is", which is normal
+for the workload, rather than "this truth is wrong". **I said earlier that it depresses precision on
+those samples; that was an assumption and it is wrong** — the addresses are real, and the engine
+finds 94% of them.
+
+### What the 2,582 false positives actually are
+
+The `.fnmap` truth maps **every instruction** to its owning function, not just the starts, so a
+detection can be classified exactly the way the 50-binary ELF corpus classifies one:
+
+| of 24,270 detections | count | share |
+|---|---|---|
+| a labelled function start | 21,688 | 89.4% |
+| **a body split** — a labelled instruction that is not its function's start | **283** | **1.2%** |
+| outside every labelled instruction | 2,299 | 9.5% |
+
+**Only 283 of the 2,582 the harness scores as false positives — 11% — are unambiguous errors.** The
+other 2,299 are addresses the labelling never covered, and the ELF corpus' stated convention for
+exactly that population is that it is "neither credited nor penalised, since unlabelled code is real
+code".
+
+Counted that way, micro precision on this corpus is **98.71%** rather than the 89.36% reported.
+
+### Where the 2,299 are
+
+| | share of 2,299 |
+|---|---|
+| beyond the labelled span entirely | 62.4% |
+| five or more instructions | 76.9% |
+| something references them | 47.8% |
+
+And they are concentrated, with a mechanism visible in each case:
+
+| sample | outside detections | where |
+|---|---|---|
+| `corebot` | 1,281 | **1,247 in `.x64`** — a 1.4 MB section; its truth spans `0x91000-0xc6849` and `.x64` begins at `0xcc000` |
+| `shujin` | 175 | 168 in `.vmp0`, a VMProtect section beyond a labelled span ending at `0x412f95` |
+| `bolek` | 105 | 80 in `.data`, 25 in `.text` |
+
+`corebot` is unambiguous: the image carries a 32-bit body and an embedded 64-bit payload, and the
+truth labels only the first. That one sample is **54% of every unlabelled detection in the corpus**.
+
+### What follows
+
+The reported PPV understates this engine on this corpus, and the gap is bookkeeping rather than
+recovery. Two things follow, and both are harness work rather than disassembler work:
+
+1. Report body splits beside PPV wherever truth carries instruction-level coverage, so a truth gap
+   cannot read as over-detection. malpedia's `.fnmap` already carries it and the harness throws it
+   away, keeping only the starts.
+2. `corebot`'s truth describes part of its image. It belongs in `KNOWN_TRUTH_DEFECTS` with that
+   evidence, the way the ByteWeight entry already records its own.
+
+Neither changes a published figure — a body-split column is added beside PPV, not instead of it.
