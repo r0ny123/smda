@@ -822,6 +822,14 @@ by construction a measurement from another machine and another hour. The correct
 unaffected, both sides being deterministic, and the cost is one runner's time rather than two running
 in parallel.
 
+**Verified on the first run of the repaired workflow**, against the same head that had just been called
+15.53% slower: verdict *inconclusive — within run-to-run noise (±6.8%)*, median paired speedup
+**+0.82%** with 95% CI [−0.40%, +2.06%] and Wilcoxon **p = 0.242**. The base side is 210.82 s and was
+measured rather than restored — it had been frozen at 252.53 s for three runs — and the correctness
+finding is unchanged, which is the control that only the timing arrangement moved. That figure also
+agrees with the local measurement above, +0.82% [−0.40%, +2.06%] on CI's corpus against −0.19%
+[−0.60%, +0.57%] on this machine's, where the two instruments had previously disagreed by 15 points.
+
 Section 12 lists the properties this project's own harness gained because a measurement without them
 had already misled it, and the first is that every row states its corpus, `n` and filter — two fake
 regressions in its history came from comparing an unfiltered population against a filtered one. This

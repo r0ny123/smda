@@ -1744,3 +1744,101 @@ Attributed per commit on the malware dumps, each row base against that commit:
 No step is separable from the session noise either. The honest statement is not that the rules are
 free — it is that on three corpora spanning 92 binaries their cost is below what two runs of one
 commit disagree by, and that a claim of "free" made from three fixtures was never supported.
+
+### What the same gate says once both sides share a runner
+
+First run of the repaired workflow, on the same head that had just been called 15.53% slower:
+
+| | before the fix (three runs) | after |
+|---|---|---|
+| verdict | **PR is slower** ×2, *inconclusive* ×1 | *inconclusive — within run-to-run noise (±6.8%)* |
+| median paired speedup | +1.26%, −13.18%, −15.53% | **+0.82%**, 95% CI [−0.40%, +2.06%] |
+| Wilcoxon p | 0.218, 0.0000, 0.0000 | **0.242** |
+| base sum-of-best-times | 252.53 s, frozen across all three | 210.82 s, measured |
+| PR sum-of-best-times | 252.83 / 282.21 / 289.04 s | 207.41 s |
+
+The base side moving at all is the first thing to check: it had been bit-identical for three runs
+because it came from cache, and it is now 210.82 s on a runner faster than the one that produced the
+frozen figure. Both sides sit on that runner, so the comparison is between two trees again rather than
+between two machines. The correctness finding is unchanged — the same two files, the same addresses —
+which is the control that only the timing arrangement moved.
+
+The noise band is now a real one: 6.8%, taken from the PR side's own repeated passes inside the same
+job. The pairwise diagnostic still spans −13.4% to +7.6% across individual passes, which is why the
+headline uses the paired per-file best-of-runs statistic and not those medians.
+
+It also agrees with the local measurement in the previous entry — CI on its corpus says +0.82%
+[−0.40%, +2.06%], this machine on the malware dumps says −0.19% [−0.60%, +0.57%] — which is two
+instruments on two machines reaching the same answer, where before they disagreed by 15 points.
+
+
+---
+
+## 2026-08-25 — what an `endbr64` false positive actually is
+
+Section 13's second agenda item ends with a measurement to make: the proposed repair is a filter on
+candidates the jump-table pass has claimed, and its ceiling is "the 14,986, minus however many of them
+the jump-table pass does not in fact resolve". The answer is: nearly all of them.
+
+Instrumenting `JumpTableAnalyzer.getJumpTargets` on six gcc/clang cells and intersecting its targets
+with the false positives that open with `endbr64`:
+
+| cell | false positives opening `endbr64` | of those, jump-table targets | targets the pass claimed on the whole image |
+|---|---|---|---|
+| `googletest_gcc-x64_Os` | 1,085 | **0** | 43 |
+| `googletest_gcc-x64_O1` | 862 | **0** | 58 |
+| `googletest_gcc-x64_O3` | 793 | **0** | 81 |
+| `googletest_gcc-x64_O2-nopie` | 646 | **0** | 58 |
+| `googletest_gcc-x64_O0` | 1,241 | **0** | 0 |
+| `googletest_clang-x64_O0` | 0 | 0 | 84 |
+
+**0 of 4,627.** The control is the last column: the pass resolves 43 to 84 targets per image, so the
+instrumentation ran — it is the population that is wrong, not the probe. On the worst image the whole
+jump-table pass claims 43 addresses while 1,085 spurious landing pads sit in it. A post-analysis filter
+on what that pass claimed cannot reach them, and the agenda item's proposed repair is dead as stated.
+
+### What they are instead
+
+Every one of them sits **strictly inside a range the image's own `.eh_frame` declares**, a median of
+892 to 2,067 bytes in. Over ten ELF cells: **4,690 of 4,690**.
+
+The first attempt at that measurement said the opposite and was wrong twice over. It read function
+extents from sized `FUNC` symbols, and these binaries are stripped — their truth comes from an
+unstripped twin — so it found 1 sized symbol on the image with 1,085 pads and reported "0 interior"
+from an empty oracle. The guard it carried, `any(declared_extents)`, passed at 1. Switching to
+`.eh_frame`, which survives stripping, then produced "1,085 of 1,085 interior" from a helper that
+**merged adjacent ranges** — and consecutive functions are laid out end-to-start, so merging collapses
+`.text` into a handful of spans and "strictly inside a declared extent" degenerates into "anywhere but
+the first byte". Unmerged, the answer is the same 100% but it now means something, and the control that
+says so is the range count: 345 merged spans against 842 real FDEs on that image.
+
+### What a rule built on it would cost
+
+| cell | false positives it removes | true positives it touches | of those, nothing references |
+|---|---|---|---|
+| `googletest_gcc-x64_Os` | 1,085 | 346 | **0** |
+| `googletest_gcc-x64_O1` | 862 | 356 | **0** |
+| `googletest_gcc-x64_O3` | 793 | 348 | **0** |
+| `googletest_gcc-x64_O2-nopie` | 646 | 360 | **0** |
+| `googletest_gcc-x64_O0` | 1,241 | 437 | **0** |
+| `lua_gcc-x64_O2` | 63 | 150 | **0** |
+| `brotli`, `zlib`, both clang cells | 0 | 284 | **0** |
+| **total** | **4,690** | **2,131** | **0** |
+
+The rule under test is the narrow one: *decline to seed* an `endbr64` prologue match that begins
+strictly inside a declared FDE range — decline to add a candidate, never remove one, which is the same
+shape as the interior-prologue rule in the earlier entry. The blanket form is not usable: 2,518
+recovered true positives sit strictly inside a declared FDE across the same ten cells, so refusing
+every interior address would cost more than it buys.
+
+Two things this measurement does **not** establish, and the end-to-end run is what will settle them.
+The 2,131 figure counts true positives with at least one inbound *code* reference, call or jump, while
+only a call reference is seeded before the prologue scan. And every one of those references was
+observed in a run where the seed was present, so a reference reaching one of them could itself descend
+from the seed — the same circularity that made an earlier before/after diff blind to the mechanism it
+was supposed to test. Neither is answerable by counting; both are answerable by building the rule and
+diffing recovered sets against truth.
+
+Also worth recording: **clang emits none of this**. Both clang cells have zero `endbr64` false
+positives against gcc's hundreds on the same source, which is why the C/C++ matrix's precision gap
+between the two toolchains is as wide as it is.
