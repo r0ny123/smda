@@ -3182,3 +3182,87 @@ real image decodes **31 KB** of call-site tables and `libstdc++.so.6` decodes 26
 
 Real pad counts are identical either side of the bounds: 25,748 / 12,585 / 2,882 over the three
 corpora that carry any.
+
+## 2026-08-25 — what a memory dump still declares, and two avenues closed with it
+
+The report's section 22 established that the malware corpus' false positives are not reachable from
+inside the disassembly: the separation that works reads "is the referencing instruction real code",
+and the nearest question the engine can ask collapses it from sixteen-fold to 2.3-fold. Anything
+that reaches this class has to bring evidence the *image* declares. This is a survey of what these
+images still declare, and the two most obvious candidates measured and closed.
+
+### What survives in 48 PE memory dumps
+
+| directory | declared | lands inside the dump |
+|---|---|---|
+| Import table | 43 | 43 |
+| Base relocations | 40 | 38 |
+| IAT | 36 | 36 |
+| Export table | 13 | 13 |
+| Load configuration | 8 | 8 |
+| Exception table | 3 | 3 |
+| TLS | 1 | 1 |
+
+### Control Flow Guard: the table is there and it is garbage
+
+`GuardCFFunctionTable` is the loader's own list of every address it will accept as an indirect-call
+target — image-declared function starts, exactly the shape section 22 asks for. Nothing in the tree
+reads it.
+
+All eight dumps that declare a load configuration declare an impossible one:
+
+| sample | image size | table pointer | declared entry count |
+|---|---|---|---|
+| bolek | 368 KB | `0x67616d69` | 1,768,370,021 |
+| corebot | 636 KB | `0x65726f63` | 7,565,407 |
+| lurk | 64 KB | `0xee` | 12,320,959 |
+| trickbot | 100 KB | `0x3167546a` | 2,020,890,693 |
+
+`0x67616d69` is `"imag"` and `0x65726f63` is `"core"`. The load-config directory in an unpacked dump
+points into arbitrary data, and every count exceeds the file it lives in by three orders of
+magnitude. This needs no control to read as a negative: the values are not small or suspicious,
+they are impossible.
+
+The avenue is closed a second way as well. **0 of 160 well-formed PEs** across every built corpus
+here declares a GuardCF table at all, so even a correct implementation could not be scored — which
+is the same "no corpus exercises the path" objection that stopped the AArch64 sibling before a
+corpus was built for it.
+
+### Base relocations: readable, and too noisy in both directions
+
+Relocations survive far better — 38 of 48 dumps carry a fully well-formed table. One thing has to be
+said before any of that is usable: **LIEF exposes zero relocation entries for these images**, because
+a dump carries no section table to map RVAs through. A pass written against `lief_binary.relocations`
+would be silently inert on precisely the corpus it was written for. Walking the blocks by hand works.
+
+Against the `.fnmap` truth, over 35 dumps and 59,279 relocated slots:
+
+| where a relocated slot's value lands | count | share of in-image |
+|---|---|---|
+| a labelled function start | 4,269 | 7.2% |
+| strictly inside a labelled body | 1,411 | 2.4% |
+| an address the labelling never covers | 53,264 | 90.4% |
+
+Relocations cover every absolute pointer, most of which name data, so as a seed source this is not
+close. Narrowing to slots whose value lands in a declared executable section leaves 15,383, of which
+27.6% are starts — better, and still not a candidate source.
+
+The measurement that closes it is what the remainder would *add*. Of the relocated executable
+targets, 2,668 are already recovered; what is left is:
+
+| not yet recovered, and the target is | count |
+|---|---|
+| a labelled function start | **116** |
+| strictly inside a labelled body | **1,285** |
+| unlabelled | 5,220 |
+
+**116 real starts against 1,285 addresses landing strictly inside a labelled body** — an eleven-to-one
+trade against, and the losing side is the unambiguous kind of error rather than the arguable one.
+Seeding relocated code pointers is not a gain on this corpus.
+
+### What this leaves
+
+Both avenues are closed on evidence rather than on judgement, and neither is worth re-attempting
+without a different corpus. The surviving directories that no pass reads are the import table and the
+IAT, both of which name imported APIs rather than the sample's own functions, and the export table,
+present in 13 of 48 and already consumed by the symbol provider where it is.

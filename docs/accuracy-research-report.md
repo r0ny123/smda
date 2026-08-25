@@ -1221,3 +1221,30 @@ analyses.
 This is the first change on this branch to improve precision and recall together on three corpora at
 once, and it is the same lesson section 22 reaches from the other end — the evidence that works is
 what the *image* declares, not what the engine derives.
+
+## 24. The malpedia gate, judged from its own artifacts
+
+The 155-file corpus gate goes red whenever the recovered function set changes and states, correctly,
+that it cannot tell an improvement from a regression. That is a reason to read its artifacts, not a
+reason to stop. Both sides upload every `.smda` report; a 366 MB artifact zip opens over HTTP range
+requests, so judging three files costs about 30 MB rather than 730.
+
+| sample | base → PR | what the changed addresses are |
+|---|---|---|
+| `elf.akira` | 13,229 → 13,181 (−48) | **all 48 still decoded inside a surviving function** — a boundary moved, no code lost. 59 functions gained blocks, several from 1 block to between 25 and 982. |
+| `elf.akira` (Rust) | 3,020 → 2,932 (−88) | none absorbed; 74 of 88 open with `mov`, which is how a Rust landing pad starts. Nothing branches to a pad, so it stops being decoded once it is not booked — the intended effect, and the same rule gains 13 true positives on the 24-cell Rust corpus that has symbol truth. |
+| `win.konni` x64 | 3,870 → 3,887 (+20 / −3) | every one of the 20 added opens with a textbook MSVC x64 prologue; one carries 22 blocks and 220 instructions and was not decoded at all before. |
+
+**The three addresses the gate labels "likely real function lost" are not losses.** Two open with
+`dec r13` followed by `je +0x19` — a loop counter decrement and its exit branch, which is not a
+prologue; the inbound reference the label rests on is the loop's own back-edge. The third is a
+one-instruction `jmp` at the end of a two-hop tail-jump chain, and the same sample's other dropped
+entry has its first instruction at a *different address* than the function it is filed under, which
+is a malformed entry rather than a routine.
+
+So the label heuristic reads an inbound reference as evidence of a real function, and a loop
+back-edge and a tail jump both supply one. That is worth stating precisely because the heuristic is
+useful: it narrowed 139 changed addresses down to three worth opening.
+
+Nothing readable in those artifacts is a regression. The gate stays red because the set changed, and
+that is what it is built to report.
