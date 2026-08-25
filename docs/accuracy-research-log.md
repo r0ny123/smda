@@ -3456,3 +3456,38 @@ cost, a 1 MB buffer of `0xf0` lock prefixes took **89 seconds**: a restart re-re
 failing byte, so failing at almost every offset costs a chunk per byte. Any future sweep over an
 attacker-supplied buffer needs a restart cap and a chunk no larger than one instruction, which
 brought the same input to 0.032 seconds.
+
+## The declared exception table walk ignored the analysis budget
+
+Raised by a review bot on the enhancements PR, verified, and fixed. Worth recording because the
+verification is what turned a plausible report into a measured one, and because the reason it
+belongs to this branch is not the reason the report gave.
+
+`_readExceptionTable` steps one 12-byte `RUNTIME_FUNCTION` per iteration over a range the analysed
+image declares, and polled nothing. The walk is bounded — a short read ends it, so it cannot pass
+the bytes that exist — and the first instinct was that the bound already did the job.
+
+It does not. Positive control, because a bound that never fires and a bound that fires correctly
+look identical from outside: an 8 MB buffer of uniformly nonzero bytes, so no entry reads as a zero
+`BeginAddress` and none of the walk's own stop conditions end it, declared as one table, walked with
+the budget already spent.
+
+| budget | entries walked |
+|---|---|
+| time still on the clock | 699,050 |
+| already spent, before the fix | **699,050** |
+| already spent, after the fix | 4,096 |
+
+The deadline was doing nothing at all. At the configured `MAX_IMAGE_SIZE` that is roughly 8.7M
+entries of work after it has passed.
+
+**What makes it this branch's to fix is the widening, not the missing poll.** Reading the table
+from the PE data directory rather than from the `.pdata` section extent is section 7's change; the
+directory size is a 32-bit field the image controls and need not correspond to any section, so a
+junk value walks the whole image where the section extent bounded it before. The missing poll
+predates the branch; the range it can now cover does not.
+
+Swept the class across both candidate managers. Every other loop over an image-declared extent
+already polls — including the AArch64 sibling that reads its own exception directory the same way —
+so this was one site, not a family. That is the useful half of the sweep: a single-site result is
+evidence only once the siblings have been looked at.
