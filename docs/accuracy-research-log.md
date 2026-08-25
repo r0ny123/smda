@@ -1653,3 +1653,94 @@ suppressing at an address already recovered as a function, which cannot lose one
 sweep rather than as a measured gain: the measured gain is the eight veneers, and these two are the
 rest of the class.
 
+
+---
+
+## 2026-08-25 — what the benchmark's timing verdict was measuring
+
+Three consecutive runs of the repository's malpedia benchmark, on three heads of this branch, reported
+**+1.26%** (*inconclusive*), **−13.18%** (*PR is slower*, Wilcoxon p = 0.0000) and **−15.53%** (*PR is
+slower*) over 155 files. The source changes between those heads are `61df8a1` and `68d4e9d`, both of
+which touch `AArch64Backend`, on a corpus of x86 and x64 images.
+
+Three figures out of the runs' own artifacts settle what happened.
+
+**The base side of all three verdicts is literally the same data.** `evaluation.json` records base
+`median_time` 0.709083, `total_time` 252.53414500000002 and `total_functions` 175973 in every one, and
+the three base passes' corpus medians — 0.737365, 0.794363, 0.785123 — agree to the last digit across
+all three runs. The job log says why: `Restore cached base results` hit, and every step after it
+(Python, install, decrypt, benchmark) was skipped. The cache restored the first run's base
+measurements into the two that followed.
+
+**The PR side did identical work in all three.** Corpus-wide recovered functions: 175942 every time.
+The same two files differing from base, the same addresses — 48 dropped on `elf.akira`, 3 dropped and
+20 gained on `win.konni` — and the same 59 block-count drifts.
+
+**The PR side got slower each time.** Sum-of-best-times **252.83 s → 282.21 s → 289.04 s**, a spread
+of **14.3%** for output that never changed; per-pass corpus medians 0.798 / 0.792 / 0.753, then 0.836
+/ 0.849 / 0.800, then 0.883 / 0.856 / 0.821. The `Run Malpedia Benchmark` step took 370 s and then
+396 s of wall clock for the same three passes. A different runner each time, over two hours.
+
+**The noise band cannot see any of this.** `evaluate_runtime.py` sets it to
+`max(base_cv, pr_cv)`, where each `cv` is the median coefficient of variation across *one side's* own
+repeated passes — passes that all run inside a single job on a single machine. It estimates
+within-runner jitter and is then used to bound a between-runner offset. In all three runs it came out
+at exactly 5.0324754475773545, because in all three it was set by the base side: the band that judged
+the second and third runners was computed from the first one's measurements.
+
+The spread is visible inside a single run without any of that. The first run's nine pairwise
+base-vs-PR comparisons, three passes against three, span **−8.25% to +5.26%** for the same two trees.
+
+## 2026-08-25 — what the branch costs in time, measured on one machine
+
+The earlier entry measured three bundled fixtures and concluded the candidate rules are free. Three
+fixtures is not a population, and the fixture that carried the headline is the one family where the
+interior-prologue rule fires hardest, so it was the most favourable sample available rather than a
+representative one. Re-measured properly: three corpora, both trees checked out into **the same
+working directory** in turn, one pass at a time with nothing else running, and the side that goes
+first rotated per pass so drift over the session cannot land on one of them. Per-sample time is the
+report's own `execution_time`, aggregated min-of-three, and the paired statistic is the repository's
+own `compute_paired_stats`.
+
+| corpus | n | base | branch head | median speedup | 95% CI | p |
+|---|---|---|---|---|---|---|
+| Plohmann malpedia dumps | 57 | 34.34 s | 34.18 s | −0.19% | [−0.60%, +0.57%] | 0.962 |
+| Built Rust (mingw PE) | 24 | 66.85 s | 63.88 s | **+1.46%** | [−2.65%, +6.51%] | 0.166 |
+| ARM64 Mach-O | 11 | 4.46 s | 4.50 s | −2.83% | [−3.62%, +2.98%] | 0.197 |
+
+The three corpora are chosen so that each landed rule is measured where it fires: the malware dumps
+are what CI measures, the Rust corpus is where the interior-prologue rule removes most of its
+candidates (42,453 → 41,663 recovered addresses), and the Mach-O corpus is the only one that reaches
+the AArch64 rules at all.
+
+**None of these is distinguishable from zero, and the controls are what say so.** Running *identical
+code* twice — the same commit, checked out into two different directories, measured in two sessions on
+the same idle machine — produces:
+
+| control | n | median speedup | 95% CI | p |
+|---|---|---|---|---|
+| `802e627` against `802e627` | 57 | +1.37% | [+0.10%, +1.80%] | **0.008** |
+| `dc2aec5` against `dc2aec5` | 57 | −0.69% | [−1.65%, +0.48%] | 0.103 |
+
+A comparison of a commit with itself clears the 95% CI and reports p = 0.008. Every figure in the
+corpus table above is smaller in magnitude than that control, so none of them is evidence of anything.
+It also shows what the Wilcoxon p-value is worth here: with ~10² paired files, a systematic
+session-level offset of a percent is more than enough for significance, which is exactly how CI
+reached p = 0.0000.
+
+The first attempt at this measurement fell into the same trap. Base was read from one checkout and the
+branch head from another, giving a median of −1.89% with p = 0.0000 — a clean, significant, entirely
+spurious 2% regression, and the number this entry would have published without the control.
+
+Attributed per commit on the malware dumps, each row base against that commit:
+
+| through | median speedup | 95% CI | p |
+|---|---|---|---|
+| `2929638` a dump's instruction set from its header | −0.38% | [−1.36%, +0.07%] | 0.123 |
+| `d0a47f7` the exception table's declared address | +1.05% | [+0.01%, +1.95%] | 0.053 |
+| `184e4d6` a prologue that opens where another ends | −0.11% | [−1.22%, +0.48%] | 0.787 |
+| `dc2aec5` the branch head | −0.19% | [−0.60%, +0.57%] | 0.962 |
+
+No step is separable from the session noise either. The honest statement is not that the rules are
+free — it is that on three corpora spanning 92 binaries their cost is below what two runs of one
+commit disagree by, and that a claim of "free" made from three fixtures was never supported.

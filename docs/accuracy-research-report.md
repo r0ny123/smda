@@ -773,10 +773,13 @@ corpora and 420,073 of those truth functions did not exist for this project befo
 | the cut after a call recovers the function, not a seed | ARM64 Mach-O n=11 and Go n=45 | 12 recovered, **458** false positives removed |
 | a candidate snapshot taken before analysis hides half the functions | ARM64 Mach-O n=11 | 8 recovered, **0** new false positives |
 
-Neither landed candidate rule costs time. Against the branch point, median of three runs: `cutwail`
-0.183 s → 0.185 s, `dotnet_readytorun` 0.340 s → 0.341 s, and the largest bundled fixture
-`rust_pe_gnu` **6.504 s → 5.861 s**, with the function count identical on all three. The per-match
-cost is smaller than the analysis saved by not seeding the candidates the rules refuse.
+The landed rules cost no measurable time, and the controls are what make that a claim rather than a
+guess. Both trees checked out into the same directory in turn, one pass at a time on an idle machine,
+the leading side rotated per pass, min of three: malware dumps (n=57) −0.19% [−0.60%, +0.57%], Rust
+(n=24) +1.46% [−2.65%, +6.51%], ARM64 Mach-O (n=11) −2.83% [−3.62%, +2.98%]. Running one commit
+against *itself* across two sessions on that same machine gives +1.37% [+0.10%, +1.80%] at p = 0.008,
+so every figure above is smaller than the disagreement between two measurements of identical code.
+Section 19 records what happens when that control is missing.
 
 No corpus lost recall at any step. Five further proposals were measured and not landed — four
 rejected for costing recall or removing more real functions than spurious ones, one found to change
@@ -784,3 +787,43 @@ nothing worth changing — and all five are in section 6 with the numbers that s
 those five, gating both AArch64 tailcall sites, is where the fix in section 10 came from: separating
 the two sites turned a rejected whole into a landed half.
 
+
+## 19. Fix landed: the benchmark's timing verdict was a comparison between two machines
+
+Three consecutive runs of this branch's malpedia benchmark reported **+1.26%** (*inconclusive*),
+**−13.18%** (*PR is slower*, Wilcoxon **p = 0.0000**) and **−15.53%** (*PR is slower*) over 155 files.
+The source changes between those heads touch `AArch64Backend` and a comment, on a corpus of x86 and
+x64 images.
+
+The runs' own artifacts say what moved.
+
+- **The base side of all three verdicts is the same data.** Base `total_time` 252.53414500000002 and
+  `total_functions` 175973 in every one, and the three base passes' corpus medians identical to the
+  last digit across all three. `Restore cached base results` hit, and every step after it was skipped:
+  the cache carried the first run's base measurements into the two that followed.
+- **The PR side did identical work in all three** — 175942 recovered functions every time, the same
+  two differing files, the same changed addresses, the same 59 block-count drifts.
+- **The PR side got slower each time**: sum-of-best-times **252.83 s → 282.21 s → 289.04 s**, a spread
+  of **14.3%** for output that never changed, and the benchmark step itself 370 s → 396 s of wall
+  clock for the same three passes. A different runner each time, over two hours.
+- **The noise band could not see it.** It is `max(base_cv, pr_cv)`, where each `cv` is the variation
+  across *one side's* repeated passes — all of which run inside one job on one machine. It measures
+  within-runner jitter and is used to bound a between-runner offset. In all three runs it was 5.032%,
+  because in all three it was set by the same cached base data.
+
+Within one run the same spread is already visible: the first run's nine pairwise base-vs-PR
+comparisons span **−8.25% to +5.26%** for the same two trees.
+
+The fix makes the comparison a comparison. The malpedia job no longer splits into a base leg and a PR
+leg on two runners with the base leg cached across runs; it times both sides in one job, on one
+machine, in base/PR/PR/base/base/PR order — which is what the fixture gate in the same workflow
+already does, and for the reason its own comment gives. The base cache goes with it: a cached side is
+by construction a measurement from another machine and another hour. The correctness comparison is
+unaffected, both sides being deterministic, and the cost is one runner's time rather than two running
+in parallel.
+
+Section 12 lists the properties this project's own harness gained because a measurement without them
+had already misled it, and the first is that every row states its corpus, `n` and filter — two fake
+regressions in its history came from comparing an unfiltered population against a filtered one. This
+is the same failure with machines in place of populations, and the run that produced it carried the
+evidence to catch it.
