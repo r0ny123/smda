@@ -2177,3 +2177,102 @@ changes from silent omission to a stated refusal, which is the direction worth h
 Not landed here. It is a pre-existing defect in code this branch does not touch, and widening an
 accuracy PR into the synthesizer is the wrong place for it — reported on the PR with the patch
 instead.
+
+---
+
+## 2026-08-25 — the Rust gap candidates, crossed against where they sit
+
+The last entry left alignment as the only field separating the gap scan's right answers from its
+wrong ones, and 348 unaligned-but-real functions as the reason a bare alignment filter is
+unaffordable. Crossing alignment with a second field — whether the candidate begins exactly where
+the previous recovered function ends, or with something in front of it — over the same 24 cells and
+the same 3,464 real / 6,093 spurious population:
+
+| 16-byte aligned | begins at previous function's end | real | spurious | precision |
+|---|---|---|---|---|
+| yes | yes | 143 | 247 | 36.7% |
+| **yes** | **no** | **2,973** | **144** | **95.4%** |
+| no | yes | 322 | 4,019 | 7.4% |
+| no | no | 26 | 1,683 | 1.5% |
+
+**Alignment is not the field doing the work; the pair is.** An aligned candidate with a gap in front
+of it is right 95.4% of the time and accounts for 86% of everything the gap scan legitimately
+contributes. The same alignment with the previous function ending on its first byte collapses to
+36.7% — worse than the corpus base rate.
+
+That also corrects the earlier framing. The 348 unaligned-but-real are not scattered: 322 of them
+(92.5%) sit immediately after a recovered function, which is what a hot/cold split or a
+`.text.unlikely` tail looks like. They are not indistinguishable from the 5,702 spurious, they were
+being described by the wrong field.
+
+Read as filters:
+
+| rule | spurious removed | real lost |
+|---|---|---|
+| refuse unaligned | 5,702 (93.6%) | 348 (10.05% of gap recall) |
+| **refuse unaligned *and* not following a function end** | **1,683 (27.6%)** | **26 (0.75%)** |
+| refuse anything following a function end | 1,827 | 2,999 (86.6%) — catastrophic |
+
+**Not proposed as it stands, for two reasons.** 26 real functions is still a recall drop, and the
+gate on this branch is that TPR does not fall on any corpus at any step. And the measurement is
+circular: "follows a recovered function's end" is defined against a set that includes the 6,093
+spurious functions, so removing 1,683 of them changes the very feature the rule reads. The static
+table is an estimate of a rule, not a measurement of one.
+
+The non-circular form of the same question — how much padding the *image* has in front of the
+candidate — is what the next measurement asks, because that field is in the buffer rather than in
+the answer.
+
+---
+
+## 2026-08-25 — the same question read from the image instead of from the answer
+
+The circular feature replaced with one the buffer carries: how many padding bytes (`cc`, `90`, `00`)
+immediately precede the candidate. Same 24 Rust cells, same population:
+
+| 16-byte aligned | padding in front | real | spurious | precision |
+|---|---|---|---|---|
+| **yes** | **yes** | **2,995** | **79** | **97.4%** |
+| yes | no | 121 | 312 | 27.9% |
+| no | yes | 140 | 704 | 16.6% |
+| no | no | 208 | 4,998 | 4.0% |
+
+The pair survives the change of instrument, and the good cell is cleaner than the circular version
+made it look: 97.4% against 95.4%, holding 86.5% of everything the gap scan legitimately finds.
+Aligned-and-padded against unaligned-and-unpadded is a **24-fold** difference in precision, read
+entirely off bytes that are in the file.
+
+The bad cell is not as clean, and that is the finding that matters:
+
+| rule | spurious removed | real lost |
+|---|---|---|
+| refuse unaligned | 5,702 | 348 |
+| refuse unpadded (any alignment) | 5,310 | 329 |
+| refuse unaligned *and* unpadded | 4,998 | **208** |
+| refuse unaligned *and* not following a function end (circular) | 1,683 | **26** |
+
+The circular feature is eight times more discriminating than the buffer one, and cannot be trusted
+from a static table; the buffer feature can be trusted and costs 208 real functions. Neither is free,
+so neither passes the gate this branch holds itself to.
+
+The padding-run histogram says why the cheap version of this idea does not work:
+
+| padding bytes in front | real | spurious |
+|---|---|---|
+| 0 | 329 | 5,310 |
+| 1 | 570 | 277 |
+| 2 | 382 | 340 |
+| 3 | 44 | 124 |
+| 4 | 190 | 16 |
+| 5 | **1,557** | 10 |
+| 6–7 | 47 | 7 |
+| 8+ | 345 | 9 |
+
+One padding byte already flips the balance in favour of real, and from four bytes up it is nearly
+pure — 2,139 real against 42 spurious. But 329 real functions have nothing in front of them at all,
+which is why "requires padding" is not a rule, and 277 spurious sit behind a single byte, which is
+why "any padding at all" is not one either.
+
+Recorded as a characterisation rather than a proposal. What it changes is the shape of the remaining
+agenda: the gap scan is not uniformly imprecise, it is two populations, and the next thing worth
+knowing is whether the same split holds on a corpus that is not mingw Rust.
