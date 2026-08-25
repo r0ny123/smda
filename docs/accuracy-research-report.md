@@ -979,3 +979,99 @@ same name, so the false-positive column was silently overwritten by the true-pos
 figure it printed for that column was the wrong quantity. Re-deriving the same number out of a
 second, independent script is what caught it. Controls establish that a probe ran; they say nothing
 about whether the line that reported it computed what it claimed.
+
+## 22. Finding: master lost precision on the malware corpus after 4.4.7, and it is one condition
+
+This section is about `master`, not about this branch. Nothing here is landed; it is a measured
+finding with the options priced, because a regression that a recall-watching gate cannot see is
+exactly the kind that survives.
+
+### The observation, and the control that makes it one
+
+An upstream pull request merged 2026-08-11 recorded malpedia macro F1 **95.4551** at TPR 98.5302.
+Today's `master` measures **95.142**. Before comparing anything, re-measure that pull request's tip
+(`e394a45`) through **today's** harness: F1 **95.455**, TPR **98.530**. The historical figure
+reproduces to three decimals, so the two instruments agree and the difference that follows is between
+commits rather than between ways of counting.
+
+| commit | date | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|---|
+| `e394a45` | 2026-08-11 | 93.193 | 98.530 | 95.455 | 21,682 | 2,501 | 242 |
+| `802e627` | 2026-08-24 | 92.639 | 98.561 | 95.142 | 21,688 | 2,583 | 236 |
+
+**Recall went up.** A gate that watches recall alone — the gate this branch holds itself to — sees
+nothing here at all.
+
+### Bisected to one commit, then to one line
+
+Six measurements over the 24 commits touching `src/smda/` in that window put effectively all of it on
+`5f70672`, which trades 7 true positives for 75 false positives. Attribution over the recovered
+address sets, per sample and per booking pass, concentrates it further: **8 of 57 samples change**,
+and two of them carry 73 of the 76 gained false positives.
+
+Two hypotheses were refuted by measurement before the third held. The commit's new register-base
+jump-table recovery resolves the *same five dispatch sites with the same targets* either side, on the
+sample that changes most. Its apparent widening of the backward-walk allowlist is a pure move with
+identical membership. The cause is one condition added to the inferred alignment floor:
+
+```python
+and not candidate.call_ref_sources
+```
+
+Reverting that line alone, with the rest of the commit in place, returns the false-positive count to
+**2,508 — the pre-commit figure to the unit**.
+
+### It is not a defect, and that is the point
+
+Measured on the 50-binary ELF corpus the commit was justified against, with that corpus' own scoring
+harness and its own `body_splits` metric:
+
+| variant | recall | recovered | body splits |
+|---|---|---|---|
+| exemption as shipped | **95.098%** | 10,826 / 11,384 | 306 |
+| narrowed to more than one call reference | 95.081% | 10,824 | 308 |
+| no exemption | 94.993% | 10,814 | 308 |
+
+It buys 12 real functions there. It is a predicate that is right on ELF executables and wrong on
+memory dumps — which wants a narrower predicate, not a revert.
+
+### The narrower predicate the tree already names
+
+`FunctionCandidate.getConfidence` scores a candidate with more than one inbound call reference at 1.0
+outright, on the stated grounds that *multiple* references are essentially always a function. Applying
+that same threshold before the alignment floor is waived keeps **10 of the 12** ELF functions and
+removes **43 of the 75** false positives on the malware corpus — better than what ships, on both
+corpora simultaneously.
+
+It is still not free: malpedia recall 98.561 → 98.548, ELF recall 95.098 → 95.081. Under the
+no-recall-drop rule it would not land here as it stands, which is why it is recorded rather than
+proposed.
+
+### Full ledger, both sides at `5f70672`
+
+| corpus | n | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|
+| boundary corpus (50 ELF) | 50 | *recall +0.105 pt* | **+12** | *−2 body splits* |
+| Bao_Dumped msvc10-32-d | 56 | +0.013 | +2 | −2 |
+| Bao byteweight msvc10-32 | 68 | +0.011 | +2 | −2 |
+| Built C/C++ (gcc, clang, mingw) | 260 | −0.001 | +34 | +26 |
+| Bao byteweight msvc10-64 | 68 | −0.002 | −3 | +6 |
+| Bao_Dumped msvc10-64-d | 56 | −0.036 | −3 | **+75** |
+| Plohmann malpedia itw | 57 | **−0.297** | +9 | **+75** |
+
+**The discriminator is not "is a memory dump".** The 32-bit dumped ByteWeight set gains 0.013, and the
+malware sample that gains the most false positives is itself a 32-bit dump. Establishing what actually
+separates them is what would turn the narrowed predicate into a free one, and it is the first item on
+the malware-corpus agenda.
+
+### What this says about the corpora, beyond this one line
+
+The issue that published the 50-binary corpus already carried the warning: 93% of its labelled
+functions come from ten statically-linked builds, so it measures glibc recovery, and *"SMDA's stated
+design target is CFG recovery from memory dumps, which this corpus does not represent at all."*
+
+This is that warning happening. A change was measured carefully — 50 binaries, stripped copies,
+body splits down from 712 to 316, no file regressed — and the corpus it was measured on does not
+contain the workload that pays for it. The general form is already recorded here from the opposite
+direction, where a guard measured *free* on an available corpus cost real functions on the one that
+exercised the path. Same instrument error, opposite sign, and neither is visible without running both.
