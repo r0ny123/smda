@@ -537,10 +537,26 @@ case body commonly ends in `jmp <shared epilogue>` with the next case's pad afte
 terminator describes both roles, and a function following a call that does not return has no
 terminator before it at all. What separates them is what the address is *used as* — a landing pad is
 the target of an indirect branch from inside a function, a function entry is the target of a call —
-and SMDA resolves jump tables during analysis. The repair therefore belongs after analysis, as a
-filter on candidates the jump-table pass has claimed, not before it as a filter on bytes.
-**Ceiling:** the 14,986, worth roughly +5 to +7 PPV on the C/C++ corpus, minus however many of them
-the jump-table pass does not in fact resolve — which is the next thing to measure.
+and SMDA resolves jump tables during analysis. That suggested a filter after analysis, on candidates
+the jump-table pass has claimed, rather than one on bytes before it.
+
+**That measurement has now been made, and it refutes the filter.** Over the 140 ELF cells, of the
+5,076 false positives that open with `endbr64`, the jump-table pass resolved **zero** — against
+46,411 targets resolved in the same run, with the same intersection catching two true positives, so
+the zero carries its controls.
+
+It is zero *by construction*, which is the useful part. A resolved target becomes a block of the
+enclosing function and never a function of its own, so the resolved set and the spurious set are
+disjoint by definition: the spurious pads are exactly the case bodies the pass **failed** to resolve.
+No filter on what the pass claimed can reach them. The shape agrees — all 5,076 sit strictly inside a
+real function, shattering 1,846 of them, and 121 of those carry eight or more apiece, which is an
+unresolved dispatch rather than scattered bad guesses.
+
+**Ceiling and direction, re-ranked.** The lever is jump-table resolution itself, not a filter. Each
+case body the pass learns to resolve stops being a false positive *and* stops splitting a real
+function in the same move, and cannot cost recall, because the address stays in the report as a
+block. Worth roughly 5 points of precision on this corpus; and being unable to fail the
+no-recall-drop gate, it is the first item to pick up rather than the second.
 
 ### 3. Rust precision after the interior-prologue fix
 
