@@ -32,6 +32,10 @@ class Sample:
     #: whose oracle speaks for part of an image sets this rather than charging the
     #: engine for the rest.
     scored_ranges: Optional[List[Tuple[int, int]]] = None
+    #: labelled addresses strictly inside a labelled function, for a corpus whose truth
+    #: covers instructions rather than only starts. A detection landing here is an
+    #: unambiguous error; one outside every labelled address may be code nothing labelled.
+    truth_interiors: Optional[Set[int]] = None
     meta: Dict[str, object] = field(default_factory=dict)
 
 
@@ -102,14 +106,27 @@ def loadByteweightTruth(function_path: str, thunk_path: Optional[str]) -> Set[in
 
 def loadFnmapTruth(fnmap_path: str) -> Set[int]:
     """Function starts from a malpedia `.fnmap` (`ins_addr;fn_addr;mnemonic`)."""
+    return loadFnmapStartsAndInteriors(fnmap_path)[0]
+
+
+def loadFnmapStartsAndInteriors(fnmap_path: str) -> Tuple[Set[int], Set[int]]:
+    """Function starts, and the labelled instruction addresses that are not starts.
+
+    An `.fnmap` names every instruction of every labelled function, so it can say which of
+    the two things a wrong detection is: an address strictly inside a labelled body, which
+    is an unambiguous error, or one the labelling never covered, which may be real code the
+    oracle did not reach. Keeping only the starts throws that distinction away.
+    """
     starts: Set[int] = set()
+    labelled: Set[int] = set()
     with open(fnmap_path, encoding="utf-8", errors="replace") as fnmap_file:
         for line in fnmap_file:
             fields = line.strip().split(";")
             if len(fields) < 2:
                 continue
+            labelled.add(int(fields[0], 16))
             starts.add(int(fields[1], 16))
-    return starts
+    return starts, labelled - starts
 
 
 def _byteweightLoader(binary_dir_name: str, truth_dir_name: str, dumped: bool, bitness: int):
@@ -158,13 +175,15 @@ def _malpediaLoader(root: str) -> List[Sample]:
         fnmap_path = os.path.join(truth_dir, name + ".fnmap")
         if not os.path.isfile(fnmap_path):
             continue
+        starts, interiors = loadFnmapStartsAndInteriors(fnmap_path)
         samples.append(
             Sample(
                 name=name,
                 path=binary_path,
                 bitness=bitnessFromName(name),
-                truth=loadFnmapTruth(fnmap_path),
+                truth=starts,
                 base_addr=parseBaseAddrFromName(name),
+                truth_interiors=interiors,
                 meta={"family": name.split("_")[0], "dumped": True},
             )
         )
@@ -306,16 +325,24 @@ CORPORA: Dict[str, Corpus] = {
 #: default keeps every build, so a row is only comparable when it names its filter
 PAPER_OPT_LEVELS = {"O1", "O2"}
 
-#: Ground-truth files established to describe a different build from the binary they
-#: are paired with, keyed by the name stem so a dumped variant of the same program is
-#: covered too. Excluded only when asked for, because every published figure for these
-#: corpora includes them and a silently smaller population is not comparable.
+#: Ground-truth files established to describe a different build from the binary they are
+#: paired with, or to cover only part of the image they are paired with, keyed by the name
+#: stem so a dumped variant of the same program is covered too. Excluded only when asked
+#: for, because every published figure for these corpora includes them and a silently
+#: smaller population is not comparable.
 KNOWN_TRUTH_DEFECTS: Dict[str, str] = {
     "msvs_whatever_32_Od_SfxSetup": (
         "truth spans 0x401000-0x414d86 while the binary's only executable section ends at "
         "0x411000; 181 of its 472 starts fall outside it, it shares 4 addresses with the O1 "
         "build's truth despite having the same 472 entries, and every sibling build matches "
         "its own truth to the address"
+    ),
+    "corebot_4929dc7185214d2a82325ae0dc6584fa22fc5457d6610199d50e85bcd0025b56": (
+        "the truth labels the 32-bit body and not the 64-bit payload beside it: its labelled "
+        "instructions span 0x91000-0xc6849 while the image carries a 1.4 MB .x64 section "
+        "beginning at 0xcc000, and 1,247 of the sample's 1,281 detections outside every "
+        "labelled instruction land in it. That is 54% of every unlabelled detection in the "
+        "corpus, from one of its 57 samples"
     ),
 }
 

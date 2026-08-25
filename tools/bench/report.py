@@ -27,6 +27,7 @@ def header(mean: str = "macro") -> str:
     return (
         f"{'config':<34} {'engine':<10} {'filter':<7} {'n':>4} "
         f"{'PPV/' + label:>8} {'TPR/' + label:>8} {'F1/' + label:>8} {'TP':>8} {'FP':>8} {'FN':>8}"
+        f" {'split':>7}"
     )
 
 
@@ -39,6 +40,9 @@ def renderRow(title: str, engine: str, opt_filter: str, aggregate: Aggregate, me
         f"{title:<34} {engine:<10} {opt_filter:<7} {aggregate.n:>4} "
         f"{_fmt(ppv, 8)} {_fmt(tpr, 8)} {_fmt(f1, 8)} "
         f"{aggregate.total_tp:>8} {aggregate.total_fp:>8} {aggregate.total_fn:>8}"
+        # a corpus labelling only starts cannot answer this, and a dash says so rather
+        # than a zero, which would read as "no body was broken apart"
+        f" {'-' if aggregate.total_body_splits is None else aggregate.total_body_splits:>7}"
     )
 
 

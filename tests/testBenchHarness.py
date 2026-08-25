@@ -19,6 +19,7 @@ from bench.corpora import (  # noqa: E402
     filterSamples,
     knownTruthDefect,
     loadByteweightTruth,
+    loadFnmapStartsAndInteriors,
     loadFnmapTruth,
     parseBaseAddrFromName,
     parseOptLevel,
@@ -26,6 +27,52 @@ from bench.corpora import (  # noqa: E402
 from bench.metrics import aggregate, scoreSample  # noqa: E402
 from bench.paper_table import cell, failedSamples  # noqa: E402
 from bench.report import renderRow, renderTable, writeResults  # noqa: E402
+
+
+class BenchBodySplitTest(unittest.TestCase):
+    """A false positive inside a labelled function is an error on any reading; one outside
+    every labelled address may be code the oracle never covered. Only a corpus labelling
+    instructions can tell them apart, and the report has to say when it cannot."""
+
+    def testASplitIsCountedOnlyWhenItLandsOnALabelledInterior(self):
+        score = scoreSample(
+            "s",
+            truth={0x1000, 0x2000},
+            detected={0x1000, 0x1008, 0x3000},
+            truth_interiors={0x1004, 0x1008, 0x2004},
+        )
+        self.assertEqual(score.false_positives, 2)
+        # 0x1008 is inside a labelled body; 0x3000 is where the oracle said nothing
+        self.assertEqual(score.body_splits, 1)
+        # the split stays inside the false positives rather than being discounted from them
+        self.assertAlmostEqual(score.ppv, 100.0 / 3)
+
+    def testACorpusThatCannotAnswerReportsNothingRatherThanZero(self):
+        score = scoreSample("s", truth={0x1000}, detected={0x1000, 0x2000})
+        self.assertIsNone(score.body_splits)
+        self.assertEqual(score.false_positives, 1)
+        summary = aggregate([score])
+        self.assertIsNone(summary.total_body_splits)
+        self.assertEqual(summary.body_split_samples, 0)
+        # a dash, never a zero: zero would read as "no function was broken apart"
+        self.assertEqual(renderRow("c", "smda", "all", summary).split()[-1], "-")
+        answering = aggregate([scoreSample("s", {0x1000}, {0x1000, 0x1008}, truth_interiors={0x1008})])
+        # control: the same column carries a number when the corpus can answer, so the
+        # dash is the corpus speaking rather than the renderer never printing anything
+        self.assertEqual(renderRow("c", "smda", "all", answering).split()[-1], "1")
+
+    def testTheAggregateNamesHowManySamplesCouldAnswer(self):
+        answering = scoreSample("a", {0x1000}, {0x1000, 0x1008}, truth_interiors={0x1008})
+        silent = scoreSample("b", {0x2000}, {0x2000, 0x9000})
+        summary = aggregate([answering, silent])
+        self.assertEqual(summary.total_body_splits, 1)
+        self.assertEqual(summary.body_split_samples, 1)
+        self.assertIn("split", renderTable([]))
+
+    def testTheScoreSurvivesASerializationRoundTrip(self):
+        score = scoreSample("s", {0x1000}, {0x1000, 0x1008}, truth_interiors={0x1008})
+        self.assertEqual(score.toDict()["body_splits"], 1)
+        self.assertIsNone(scoreSample("s", {0x1000}, {0x1000}).toDict()["body_splits"])
 
 
 class BenchMetricsTest(unittest.TestCase):
@@ -123,6 +170,17 @@ class BenchCorporaTest(unittest.TestCase):
             with open(fnmap_path, "w", encoding="utf-8") as fnmap_file:
                 fnmap_file.write("0x2d1000;0x2d1000;mov\n0x2d1004;0x2d1000;push\n0x2d1010;0x2d1010;mov\nbroken\n")
             self.assertEqual(loadFnmapTruth(fnmap_path), {0x2D1000, 0x2D1010})
+
+    def testFnmapAlsoYieldsTheLabelledAddressesThatAreNotStarts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fnmap_path = os.path.join(directory, "sample.fnmap")
+            with open(fnmap_path, "w", encoding="utf-8") as fnmap_file:
+                fnmap_file.write("0x2d1000;0x2d1000;mov\n0x2d1004;0x2d1000;push\n0x2d1010;0x2d1010;mov\nbroken\n")
+            starts, interiors = loadFnmapStartsAndInteriors(fnmap_path)
+            self.assertEqual(starts, {0x2D1000, 0x2D1010})
+            # 0x2d1004 is labelled and is not a start; the two starts are labelled as well
+            # and must not appear here, or every recovered function would read as a split
+            self.assertEqual(interiors, {0x2D1004})
 
     def testBaseAddressComesFromTheNameSuffixOnly(self):
         self.assertEqual(parseBaseAddrFromName("x_dump7_0x00400000"), 0x400000)

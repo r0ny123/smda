@@ -46,6 +46,7 @@ def scoresFrom(payload: Dict[str, object], opt_filter: str) -> List[SampleScore]
                 true_positives=entry["tp"],
                 false_positives=entry["fp"],
                 false_negatives=entry["fn"],
+                body_splits=entry.get("body_splits"),
                 meta=meta,
             )
         )

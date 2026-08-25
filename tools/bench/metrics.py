@@ -20,6 +20,10 @@ class SampleScore:
     true_positives: int
     false_positives: int
     false_negatives: int
+    #: false positives landing strictly inside a labelled function body, where the corpus
+    #: truth covers instructions rather than only starts. None means the corpus cannot
+    #: answer, which must not be read as zero.
+    body_splits: Optional[int] = None
     meta: Dict[str, object] = field(default_factory=dict)
 
     @property
@@ -57,6 +61,7 @@ class SampleScore:
             "tp": self.true_positives,
             "fp": self.false_positives,
             "fn": self.false_negatives,
+            "body_splits": self.body_splits,
             "ppv": self.ppv,
             "tpr": self.tpr,
             "f1": self.f1,
@@ -74,6 +79,7 @@ def scoreSample(
     detected: Set[int],
     meta: Optional[Dict] = None,
     scored_ranges: Optional[List[Tuple[int, int]]] = None,
+    truth_interiors: Optional[Set[int]] = None,
 ) -> SampleScore:
     """Score one binary, optionally only where the corpus' oracle has authority.
 
@@ -82,6 +88,13 @@ def scoreSample(
     there, and counting it as an error would charge the engine for the oracle's
     coverage. The number dropped is recorded, because a scored region that quietly
     shrank reads exactly like precision that rose.
+
+    `truth_interiors` names labelled addresses that are not function starts, which only a
+    corpus labelling instructions can supply. It splits the false positives into the ones
+    that are errors on any reading -- an address inside a function the oracle labelled --
+    and the ones that merely sit where the oracle said nothing. Both stay in `ppv`: this
+    reports the split rather than deciding it, because whether unlabelled code should be
+    charged to the engine is a property of how complete each corpus' labelling is.
     """
     recorded = dict(meta or {})
     if scored_ranges:
@@ -89,13 +102,15 @@ def scoreSample(
         recorded["outside_scored_region"] = len(detected) - len(in_scope)
         detected = in_scope
     true_positives = truth & detected
+    false_positives = detected - truth
     return SampleScore(
         name=name,
         truth=len(truth),
         detected=len(detected),
         true_positives=len(true_positives),
-        false_positives=len(detected - truth),
+        false_positives=len(false_positives),
         false_negatives=len(truth - detected),
+        body_splits=None if truth_interiors is None else len(false_positives & truth_interiors),
         meta=recorded,
     )
 
@@ -128,6 +143,10 @@ class Aggregate:
     total_tp: int
     total_fp: int
     total_fn: int
+    #: false positives inside a labelled function body, summed over the samples whose
+    #: corpus can answer, with a count of those samples so a partial figure is visible
+    total_body_splits: Optional[int]
+    body_split_samples: int
     stdev_f1: Optional[float]
 
     def toDict(self) -> Dict[str, object]:
@@ -147,6 +166,8 @@ class Aggregate:
             "total_tp": self.total_tp,
             "total_fp": self.total_fp,
             "total_fn": self.total_fn,
+            "total_body_splits": self.total_body_splits,
+            "body_split_samples": self.body_split_samples,
             "stdev_f1": self.stdev_f1,
         }
 
@@ -193,6 +214,7 @@ def aggregate(scores: Iterable[SampleScore]) -> Aggregate:
     micro_f1 = None
     if micro_ppv is not None and micro_tpr is not None and micro_ppv + micro_tpr > 0:
         micro_f1 = 2 * micro_ppv * micro_tpr / (micro_ppv + micro_tpr)
+    scored_splits = [score.body_splits for score in scores if score.body_splits is not None]
     per_sample_f1 = [score.f1 for score in scores if score.f1 is not None]
     per_sample_ppv = [score.ppv for score in scores if score.ppv is not None]
     per_sample_tpr = [score.tpr for score in scores if score.tpr is not None]
@@ -212,5 +234,7 @@ def aggregate(scores: Iterable[SampleScore]) -> Aggregate:
         total_tp=total_tp,
         total_fp=total_fp,
         total_fn=total_fn,
+        total_body_splits=sum(scored_splits) if scored_splits else None,
+        body_split_samples=len(scored_splits),
         stdev_f1=_stdev(per_sample_f1),
     )

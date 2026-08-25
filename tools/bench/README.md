@@ -25,6 +25,19 @@ F1  = 2·TPR·PPV / (TPR + PPV)
 An engine that returns nothing for a binary scores 0, not "undefined" — otherwise a crash would
 be averaged away rather than counted.
 
+**A false positive is not one thing, and the `split` column says so.** Where a corpus labels
+*instructions* rather than only starts — malpedia's `.fnmap` does — a wrong detection is either
+inside a function the oracle labelled, which is an error on any reading, or outside every labelled
+address, which may be code the oracle never covered. The column counts the first kind. It is
+reported beside PPV and changes none of the rates: whether unlabelled code should be charged to the
+engine depends on how complete each corpus' labelling is, so the harness reports the split rather
+than deciding it. A corpus that cannot answer prints `-`, never `0` — zero would read as "no
+function was broken apart".
+
+On malpedia this matters more than it sounds: of 2,582 false positives, 283 are splits and 2,299 sit
+where nothing is labelled, and one sample supplies 1,247 of those from a section its truth does not
+cover.
+
 Corpus figures aggregate the **per-binary rates**. All three aggregations are written to every
 result file and the printed table names the one it is showing:
 
@@ -147,6 +160,9 @@ carry the reason with it.
 Before printing any metric, `run.py` reports a corpus-integrity check: for every sample whose
 binary has a section table, whether its ground truth lands inside an executable section, together
 with how many samples the check could run on at all. A headerless dump names no sections, so the
-check does not apply there and silence must not be read as a pass. `--exclude-known-defects` drops
-samples recorded in `corpora.KNOWN_TRUTH_DEFECTS` as describing a different build, and is off by
-default because every published figure for these corpora includes them.
+check does not apply there and silence must not be read as a pass. Truth landing outside an
+executable section is not by itself a defect on a memory dump — on the malware corpus 94% of those
+addresses are recovered anyway, because a packed sample's section table does not describe where its
+code is. `--exclude-known-defects` drops samples recorded in `corpora.KNOWN_TRUTH_DEFECTS` as
+describing a different build or covering only part of their image, and is off by default because
+every published figure for these corpora includes them.
