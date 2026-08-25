@@ -2089,3 +2089,37 @@ The instrument is the same one that attributed the AArch64 veneers and the nopie
 each `add*Candidate` method to record the first pass that books an address, then intersect with the
 false-positive set. It costs one run of the corpus and it has now redirected three investigations
 that reading the code had pointed the wrong way.
+
+---
+
+## 2026-08-25 — what the Rust gap candidates look like
+
+The attribution put 70.2% of the surviving Rust false positives on `addGapCandidate`, so the next
+question is whether the gap scan is indiscriminate there or whether its wrong answers look different
+from its right ones. Describing both sides with the same four fields, over all 24 cells — 3,464
+gap-booked addresses that are real functions against 6,093 that are not:
+
+| | real | spurious |
+|---|---|---|
+| **16-byte aligned** | **3,116 (90.0%)** | **391 (6.4%)** |
+| unaligned | 348 (10.0%) | 5,702 (93.6%) |
+| single block | 2,406 (69.5%) | 3,598 (59.1%) |
+| referenced by something | 23 (0.7%) | 156 (2.6%) |
+| median instruction count | 5 | 8 |
+
+**Only alignment separates them**, and it separates them almost completely. Of the aligned gap
+candidates 88.9% are real; of the unaligned, 5.8% are. The other three fields are flat or point the
+wrong way: block count barely moves, the spurious side is *more* often referenced than the real one,
+and the opening mnemonic is `mov` on both sides (4,779 spurious against 2,454 real) so no byte test
+lives here either.
+
+**It is not usable as a filter as it stands.** Refusing unaligned gap candidates would remove 5,702
+of the 6,093 spurious — 93.6% — and cost **348 real functions**, which is 10% of everything the gap
+scan contributes on this corpus and far outside the reject criterion. Recorded as a bound rather than
+a proposal: any usable rule here is alignment plus a second signal that recovers those 348, and the
+next measurement is what they have in common, not whether alignment works.
+
+Two cautions on the corpus. These are mingw PE Rust binaries, so the alignment property may be a
+property of that linker rather than of Rust; a second corpus has to confirm it before anything is
+built on it. And the gap scan contributing 3,464 real functions here is worth stating beside the
+6,093 — it is not a pass that could simply be turned down.
