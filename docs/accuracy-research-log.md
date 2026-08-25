@@ -3379,3 +3379,63 @@ ranks as the largest single precision mechanism on this corpus.
 Moving a frozen fixture is a deliberate baseline update rather than a config edit, which is the
 stated reason the two options beside it ship off as well. The measurement supports enabling it; the
 decision is a maintainer's, and everything needed to make it is recorded here.
+
+## 2026-08-25 — headerless bitness: the approach the agenda named, measured and rejected
+
+Section 13 item 8: three of the nine headerless dumps get their bitness wrong under
+`--bitness auto`, and the note says attacking it "needs decoding coverage in both modes rather
+than another byte statistic". Built and measured properly, that approach does not work. Recording
+why, because it is the obvious next thing to try.
+
+The existing probe counts what share of `0x48` bytes introduce a REX.W-compatible opcode. `0x48`
+is `dec eax` in 32-bit code, so a 32-bit binary that decrements often reads as 64-bit: `geodo`
+0.63, `tinba` 0.78, `hamweq` 0.89 against a 0.5 threshold.
+
+### The corpus cannot calibrate a replacement on its own
+
+All nine headerless samples are 32-bit, so a discriminator tuned on them is fitted to one class.
+The two-class set used instead was the `.text` contents of built x86 and x86-64 binaries.
+
+Coverage does not discriminate: a sweep restarting one byte on after each failure covers 99.7% or
+more either way, and on `hamweq` it favours the wrong answer by 0.00003. Counting *restarts* looked
+decisive:
+
+| over `.text` only | fail64 / fail32 |
+|---|---|
+| built x86-64, n=19 | 0.0 … **0.54** |
+| built x86, n=6 | **3.33** … 35.67 |
+| real 32-bit dumps, n=9 | 1.00 … 15.07 |
+
+An order of magnitude of gap. Deciding only on a 2x margin with at least 16 failures, and abstaining
+otherwise, took three wrong answers to one — `geodo` and `tinba` fixed, `hamweq` abstaining — at
+43 correct, 0 wrong and 22 abstentions over 65 built `.text` sections.
+
+### Why that number was not a result
+
+The probe does not receive a `.text` section. It receives whatever buffer the loader hands it, and
+for a headerless dump that is the whole image. Re-measured on **whole files**, the same rule is
+wrong on **9 of 12** 64-bit images — the opposite of what the `.text` calibration promised.
+
+Data is the confound. Non-code bytes fail to decode far more often as 64-bit than as 32-bit, so the
+ratio tracks how much of the buffer is not code rather than what mode it is. The 32-bit dumps agreed
+with the rule because the bias points at 32 and they happen to be 32; they were right for the wrong
+reason, which is why nine 64-bit images were needed to see it.
+
+The project's own bitness tests caught this before it shipped, on exactly the two fixtures whose
+whole-file form the `.text` calibration never covered. That is the same shape as the branch's
+earlier "before/after diff is blind to a behaviour already in the baseline": a measurement over an
+input the code never sees answers a different question, however clean its separation looks.
+
+### Where this leaves item 8
+
+A decode statistic can work, but only over code, and a headerless dump is exactly the case where
+nothing declares where the code is. Anything that reaches it has to establish code extent first —
+which is the same conclusion the malware-corpus work reached from the other direction, and it makes
+item 8 downstream of a harder problem rather than a small one. `hamweq` is beyond it either way: it
+stumbles exactly once in each mode over 12 KB, which is no evidence at all.
+
+The cost measurement is worth keeping even though the rule is gone. Timed on input built to make it
+cost, a 1 MB buffer of `0xf0` lock prefixes took **89 seconds**: a restart re-reads a chunk from the
+failing byte, so failing at almost every offset costs a chunk per byte. Any future sweep over an
+attacker-supplied buffer needs a restart cap and a chunk no larger than one instruction, which
+brought the same input to 0.032 seconds.
