@@ -2378,3 +2378,45 @@ Not a proposal yet. `5f70672` fixes four real defects and the 396 body splits it
 population this repository can also measure, so what it is worth elsewhere has to be priced before
 anything is said about it. The next measurement is the four ByteWeight PE sets either side of it,
 which are the corpora closest in kind to the one paying.
+
+---
+
+## 2026-08-25 — the position family of gap-scan filters, closed out
+
+The AArch64 control named a third position: a thousand candidates sit directly behind a `ret` with no
+padding at all, which the padding-only feature files under "nothing in front" with the noise. Adding
+that — is the candidate preceded by padding, by a decoded instruction that *ends* a function, by other
+decoded code, or by nothing decoded at all — over all three corpora, 356 cells:
+
+| corpus | padded | after a terminator | after other code | nothing decoded |
+|---|---|---|---|---|
+| Rust, 24 cells | 3,135 / 783 | 329 / 5,270 | 0 / 0 | 0 / 40 |
+| C/C++ x86, 260 cells | 14,654 / 5,531 | 3,008 / 14,399 | 0 / 20 | 2 / 15 |
+| C/C++ AArch64, 72 cells | 981 / 555 | 1,218 / 2,541 | 169 / 35 | 43 / 591 |
+
+*(real / spurious)*
+
+**On intel the feature is very nearly constant and therefore useless.** Every gap candidate on both
+x86 corpora is either padded or sitting directly behind a terminator — "after other code" is 0 of
+9,557 on Rust and 20 of 37,629 on C/C++. Refusing the residue buys 40 spurious on Rust and 35 on
+C/C++, for 0 real functions in both cases. It is not a filter, it is a rounding error.
+
+That is a real answer rather than a null one: the gap scan on intel does not book candidates in the
+middle of nowhere. It books them where a function plausibly ends, and the false positives are in the
+same places as the true ones.
+
+**On AArch64 it separates, and still costs.** "Nothing decoded in front" is 43 real against 591
+spurious — 6.8% precision, 13.7 spurious per real function lost, which is the best ratio any rule has
+reached on this corpus and still not free. `after other code` inverts: 169 real against 35, 82.8%.
+
+Controls printed on every row. Terminators seen immediately before a candidate: `jmp` 11,913 and `ret`
+5,484 on C/C++ x86; `jmp` 3,154 and `ret` 2,445 on Rust; `b` 2,549, `ret` 1,063 and `br` 147 on
+AArch64.
+
+**This closes the family.** Alignment, padding, following-a-terminator and following-decoded-code are
+the four position facts available before a candidate is analysed, measured in every combination on
+three corpora and 356 cells. None of them yields a cut that removes spurious candidates without
+removing real functions, on any corpus. The precision headroom in the gap scan is real — it books
+6,093, 19,965 and 3,722 spurious candidates on the three — but it is not reachable from where the
+candidate sits. Anything that reaches it has to use what the address is *used as*, which is the same
+conclusion the landing-pad work reached by a different route.
