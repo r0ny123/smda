@@ -2319,3 +2319,62 @@ that control.
 That control also named the next question. A thousand AArch64 candidates sit directly behind a `ret`
 with no padding at all, and the padding-only feature files every one of them under "nothing in
 front" together with the genuine noise.
+
+---
+
+## 2026-08-25 — master has lost precision on the malware corpus since 4.4.7
+
+An upstream pull request merged on 2026-08-11 recorded a malpedia figure of macro F1 **95.4551** at
+TPR 98.5302. Today's master measures **95.142**. Both numbers are in the same units, so the first
+thing to establish was whether the two instruments agree at all.
+
+Re-measuring that pull request's tip (`e394a45`) through **today's** harness returns F1 **95.455**,
+TPR **98.530**, PPV 93.193 — the historical figure reproduced to three decimals. That is the control:
+the comparison below is between two commits, not between two ways of counting.
+
+| commit | date | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|---|
+| `e394a45` | 2026-08-11 | 93.193 | 98.530 | 95.455 | 21,682 | 2,501 | 242 |
+| `802e627` | 2026-08-24 | 92.639 | 98.561 | 95.142 | 21,688 | 2,583 | 236 |
+| Δ | | **−0.554** | +0.031 | **−0.313** | +6 | **+82** | −6 |
+
+Recall went *up*. A gate that watches recall alone — which is the gate this branch holds itself to —
+would not have seen this at all.
+
+### Bisected
+
+Twenty-four commits touch `src/smda/` in that window. Six measurements over the range, n=57 and filter
+`all` throughout, and the corpus is deterministic (three consecutive commits returning byte-identical
+counts is the evidence for that):
+
+| commit | pull request | PPV | TPR | F1 | FP |
+|---|---|---|---|---|---|
+| `e394a45` | #233 tip | 93.193 | 98.530 | 95.455 | 2,501 |
+| `8f8070e` | #268 | 93.193 | 98.530 | 95.455 | 2,501 |
+| `91097b6` | #273 | 93.193 | 98.530 | 95.455 | 2,501 |
+| `785b148` | #282 | 93.197 | 98.530 | 95.457 | 2,500 |
+| `9ab1329` | #284 | 93.180 | 98.523 | 95.443 | 2,508 |
+| **`5f70672`** | **#285** | **92.639** | **98.561** | **95.142** | **2,583** |
+| `802e627` | master | 92.639 | 98.561 | 95.142 | 2,583 |
+
+**Effectively all of it is one commit.** `5f70672` — "recover the function starts four boundary
+defects were hiding" — takes 7 true positives and gives back **75 false positives**, a 1 : 10.7 trade.
+`9ab1329` accounts for a further −0.014 and `785b148` for +0.002; the other twenty-one commits move
+nothing on this corpus.
+
+### Why it was not caught
+
+The commit records its own measurement, and it is a good one: 50 labelled binaries, each scored
+against its own symbol table with analysis run on the stripped copy, body splits down from 712 to 316,
+recall unchanged, no file regressed, every bundled fixture identical.
+
+Those 50 binaries are gcc and clang ELF executables. The corpus that pays for the change is 57 PE
+memory dumps of malware, and it was not measured. The rule this breaks is already written down here
+from the other direction: a change measured neutral on the corpus you have can still cost on the
+corpus that exercises the path. Here a change measured *good* on the corpus available costs on one
+that was never consulted — same instrument error, opposite sign.
+
+Not a proposal yet. `5f70672` fixes four real defects and the 396 body splits it removes are on a
+population this repository can also measure, so what it is worth elsewhere has to be priced before
+anything is said about it. The next measurement is the four ByteWeight PE sets either side of it,
+which are the corpora closest in kind to the one paying.
