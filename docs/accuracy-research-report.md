@@ -753,13 +753,13 @@ Filter `all`, arithmetic macro mean, one run of the whole harness at the last co
 | Bao_Dumped msvc10-32-d | 56 | 91.189 | 97.510 | 94.060 | 108,486 | 114,162 |
 | Bao_Dumped msvc10-64-d | 56 | 98.874 | 99.811 | 99.338 | 106,679 | 108,455 |
 | Plohmann malpedia itw | 57 | 92.643 | 98.561 | 95.144 | 21,924 | 24,270 |
-| Built C/C++ (gcc, clang, mingw) | 260 | 91.878 | 95.523 | 93.428 | 213,441 | 229,371 |
+| Built C/C++ (gcc, clang, mingw) | 260 | 92.623 | 95.525 | 93.875 | 213,441 | 225,405 |
 | Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 162,621 | 171,338 |
 | Built Rust (gnu targets) | 24 | 78.951 | 97.493 | 87.185 | 33,817 | 41,663 |
 | Built .NET (CIL + NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 7,441 | 9,257 |
 | ARM64 Mach-O (linker truth) | 11 | 94.220 | 96.711 | 95.074 | 2,753 | 2,767 |
 
-**875,544 truth functions across ten corpora, 926,659 detections, no failed sample.** Five of the ten
+**875,544 truth functions across ten corpora, 922,693 detections, no failed sample.** Five of the ten
 corpora and 420,073 of those truth functions did not exist for this project before this branch.
 
 ## 18. Summary of what landed
@@ -772,6 +772,7 @@ corpora and 420,073 of those truth functions did not exist for this project befo
 | a prologue that opens where another ends | ten corpora | **912** false positives removed, **0** true positives lost |
 | the cut after a call recovers the function, not a seed | ARM64 Mach-O n=11 and Go n=45 | 12 recovered, **458** false positives removed |
 | a candidate snapshot taken before analysis hides half the functions | ARM64 Mach-O n=11 | 8 recovered, **0** new false positives |
+| a landing pad inside a declared unwind range is not a function | C/C++, n=260 | **3,977** false positives removed, 18 recovered against 7 lost |
 
 The landed rules cost no measurable time, and the controls are what make that a claim rather than a
 guess. Both trees checked out into the same directory in turn, one pass at a time on an idle machine,
@@ -835,3 +836,68 @@ had already misled it, and the first is that every row states its corpus, `n` an
 regressions in its history came from comparing an unfiltered population against a filtered one. This
 is the same failure with machines in place of populations, and the run that produced it carried the
 evidence to catch it.
+
+## 20. Fix landed: a landing pad inside a declared unwind range is not a function
+
+**The defect.** `endbr64` is a CET landing pad and the prologue scan seeds every one it finds. A
+landing pad marks every *indirect-branch target*, not every function: under `-fcf-protection` gcc
+emits one at each jump-table destination, each computed-goto label and each exception landing pad
+inside a body, so one `switch` produces a dozen spurious function starts. Section 13 ranked this as
+the largest single precision mechanism found here and recorded five byte-level filters that were
+tried and rejected, the best of them refusing 1,840 real function starts along with the spurious
+pads.
+
+**What the agenda proposed, and why it is dead.** The repair was to be a filter on candidates the
+jump-table pass had claimed, since a pad is what an indirect branch arrives at. Instrumenting
+`JumpTableAnalyzer.getJumpTargets` over six cells: **0 of 4,627** of the `endbr64`-headed false
+positives is a jump-table target. The control is that the pass claims 43 to 84 targets per image, so
+it ran — on the worst image it resolves 43 addresses while 1,085 spurious pads sit in it.
+
+**What they are instead.** Every one of 4,690 over ten ELF cells sits **strictly inside a range the
+image's own `.eh_frame` declares**, a median of 892 to 2,067 bytes in. The unwinder's record is the
+evidence the bytes cannot supply: an FDE covers one routine, so a pad that is not its range's own
+start is inside that routine.
+
+**The rule.** Decline to *seed* an `endbr64` prologue match that begins strictly inside a declared FDE
+range. Decline to add a candidate, never remove one — reference discovery, symbols and exception
+records all run before the prologue scan, so an address the image already names keeps its candidacy.
+It is the only seeded pattern that names a place a branch can arrive rather than a way a function
+opens, and the only one the test applies to.
+
+**Result**, ten corpora in one run:
+
+| corpus | n | before | after |
+|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | 91.878 / 95.523 / 93.428 | **92.623** / 95.525 / **93.875** |
+| the other nine | — | — | bit-identical |
+
+3,977 false positives removed. The nine unchanged corpora are the control that the rule reaches only
+ELF images with a readable `.eh_frame` section — every PE, Mach-O and memory-dump corpus is inert by
+construction, and Go emits no `.eh_frame` at all. The worst cell in the matrix,
+`googletest_gcc-x64_Os`, goes from **52.058 PPV to 97.701**.
+
+**Recall is not free here.** Eighteen true positives are gained and **seven lost**, on four of the 260
+cells, for a net of +11 and 11 fewer misses; `summarize.py --compare` reports `compared=10` with no
+TPR regression on any corpus. None of the seven is inside a declared range, so the rule refused none
+of them directly — they are lost because the analysis that reached them descended from a pad it did
+refuse. That is a smaller claim than the interior-prologue rule in section 9, which lost nothing
+anywhere, and it is stated rather than rounded away.
+
+**The gap scan, built and rejected.** The same interior test applied to gap analysis removes the
+remaining pads, and costs every CET `.plt` stub: on one cell **179 of 179** functions lost are PLT
+entries, and recall falls from 99.581 to 84.673. The whole PLT block sits under a single FDE, so the
+test reads every stub after the first as interior; and on a CET binary it is the gap scan rather than
+`locateStubChainCandidates` that recovers them, because that pass matches the classic
+`jmp qword ptr [rip+...]` stub shape and not the `endbr64`-prefixed one. The seeding half is free on
+the PLT for exactly that reason — the gap scan is its safety net. Teaching the stub pass the CET form
+is what would let the gap half land, and is the next step rather than part of this one.
+
+**The class, swept.** AArch64's BTI landing pad is the same construct — `is_bti_landing_pad` is seeded
+by `locatePrologueCandidates` and guarded only by `_isLikelyInteriorBtiCandidate`, which fires solely
+for addresses already in `code_map`, so an interior pad in a not-yet-decoded region is still seeded.
+The declared-range predicate lives in the shared candidate manager and would apply unchanged. It is
+**not fixed here because nothing available can measure it**: the Go arm64 cells carry zero FDE ranges
+(Go emits no `.eh_frame`), the ARM64 Mach-O corpus has no such section, and the one bundled AArch64
+ELF with 276 readable ranges has no ground truth, so a change there could only be scored by counting
+recovered addresses — which section 16 records as the wrong instrument. An AArch64 ELF corpus with
+symbol truth is the prerequisite, and it is the first entry on the agenda that this fix creates.

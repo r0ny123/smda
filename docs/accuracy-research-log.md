@@ -1842,3 +1842,71 @@ diffing recovered sets against truth.
 Also worth recording: **clang emits none of this**. Both clang cells have zero `endbr64` false
 positives against gcc's hundreds on the same source, which is why the C/C++ matrix's precision gap
 between the two toolchains is as wide as it is.
+
+---
+
+## 2026-08-25 — the landing-pad rule, landed
+
+Built as the previous entry described: decline to seed an `endbr64` prologue match beginning strictly
+inside a declared FDE range. Decline to add, never remove.
+
+Ten corpora in one run, against the branch head before it:
+
+| corpus | n | dPPV | dTPR | dF1 | dTP | dFP |
+|---|---|---|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | **+0.745** | +0.001 | **+0.447** | **+11** | **−3,977** |
+| the other nine | — | +0.000 | +0.000 | +0.000 | +0 | +0 |
+
+`summarize.py --compare` reports `compared=10` and no TPR regression on any corpus. The nine
+bit-identical corpora are the inertness control: every PE, Mach-O and memory-dump corpus has no
+readable `.eh_frame` section, and Go emits none, so the rule cannot fire there. `googletest_gcc-x64_Os`
+goes from **52.058 PPV to 97.701**.
+
+**Seven true positives are lost**, against eighteen gained, on four of the 260 cells —
+`googletest_clang-x64_O2-static` (−3), `tinyxml2_gcc-x64_O2` (−2), `tinyxml2_gcc-x64_O2-nopie` (−1),
+`tinyxml2_gcc-x64_O2-static` (−1). Checking each against the decoded ranges: **none of the seven is
+inside a declared FDE range**, so the rule refused none of them directly. They are second-order — the
+analysis that reached them descended from a pad it did refuse. Two of the three examined open with
+`endbr64` followed by `push r15; push r14`; the third opens `mov rdi, rbp; call …`, which is not an
+entry shape at all and is a truth start only because the symbol table names it.
+
+### The half that was built and rejected
+
+Applying the same test to gap analysis removes the pads the seeding half leaves behind, and it is a
+catastrophe for recall:
+
+| cell | seeding half only | with the gap half |
+|---|---|---|
+| `googletest_gcc-x64_Os` | 97.701 / **99.665** | 99.021 / **84.673** |
+| `googletest_gcc-x64_O1` | 79.295 / **94.969** | 99.321 / **78.886** |
+| `zlib_gcc-x64_O2` | 99.510 / **97.596** | 99.425 / **83.173** |
+
+Every function it loses is a PLT stub — 179 of 179 on the first cell, 30 of 30 on the last, all in
+`.plt` or `.plt.sec`. The whole PLT block sits under one FDE, so every stub after the first reads as
+interior; and on a CET binary it is the **gap scan** that recovers them, not
+`locateStubChainCandidates`, whose byte patterns match the classic `jmp qword ptr [rip+…]` stub and
+not the `endbr64`-prefixed one. That also explains why the seeding half is free on the PLT: refusing
+the seed there costs nothing because the gap scan still reaches them.
+
+### What the fixture shows, and what it does not
+
+No bundled sample carries the shape, so one was built: gcc `-O2 -fcf-protection=full`, a `dispatch`
+routine with a computed goto, committed xored as `elf_cet_landing_pads_x64_xored`. Its `.text` holds
+ten pads — four that each begin a declared range, four strictly inside `0x1180`–`0x11e6`, and two in
+neither — which is the fixture's own control that both shapes are present before anything is compared.
+
+The test asserts the pads are not **seeded**, not that they are absent from the report, because they
+are not absent: the gap scan books all four, exactly as it does on `googletest_gcc-x64_O2-nopie`. The
+first version of the test asserted absence and failed for that reason, which is the more useful
+result — `dispatch` is recovered but decodes only three blocks, because the PIE computed-goto table
+is not resolved, so its case bodies stay unclaimed and the gap scan carves them out. On this shape the
+pads are a symptom and the unresolved indirect dispatch is the cause.
+
+### The class
+
+AArch64's BTI pad is the same construct, seeded by `locatePrologueCandidates` and guarded only by
+`_isLikelyInteriorBtiCandidate`, which fires solely for addresses already in `code_map`. The shared
+predicate would apply unchanged. It is not fixed here because nothing here can measure it: Go's arm64
+cells carry **zero** FDE ranges, the ARM64 Mach-O corpus has no such section, and the one bundled
+AArch64 ELF that has 276 readable ranges has no ground truth. Scoring a change there by counting
+recovered addresses is the instrument this project has already recorded as wrong.
