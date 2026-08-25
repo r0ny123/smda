@@ -2892,3 +2892,49 @@ Worth up to 5,076 false positives and 1,846 repaired function boundaries on this
 points of precision. **Correlation is not yet the claim**: this establishes that the pads only occur
 where an LSDA exists, not that the pads *are* the addresses the LSDA declares. Decoding one and
 intersecting is the next step and has to come before any of this is proposed.
+
+### Two attempts to confirm the landing-pad reading, both flawed, and where it actually stands
+
+The correlation above is strong but it is correlation. Two attempts to turn it into a direct claim
+both failed, in ways worth recording because each looked like an answer.
+
+**Attempt one, decoding the LSDA, was a broken probe.** It reported 0 of 4,818 spurious pads among
+40,561 declared landing pads. That zero is an artifact: `LPStart` in an LSDA header defaults to the
+*function start the FDE names*, and the decoder defaulted it to 0, so every "declared pad" it computed
+was a section-relative offset being compared against an absolute address. The two number spaces cannot
+intersect, so the zero was guaranteed before the data was read. The control that should have caught
+it did, quietly — "36 real functions declared as landing pads" is a coincidence-sized number, and a
+real one would have been 0.
+
+**Attempt two, looking for the C++ runtime, was under-powered.** It asked whether each spurious
+detection reaches `__cxa_begin_catch` / `_Unwind_Resume`, and found 1.9% against 1.3% for real
+functions — no separation. But these detections are two or three instructions long: a landing pad
+would not call the runtime *in its own first block*, it would fall into a cleanup path further on,
+which the harness attributes to a different recovered function. The test could not have found what it
+was looking for.
+
+**What is solid.** Following the terminating branch of each spurious detection, over the 28 C++ cells:
+
+| | count | share |
+|---|---|---|
+| jumps into a labelled function's **interior** | 3,884 | 80.6% |
+| jumps to a labelled function's **entry** | 487 | 10.1% |
+| carries no jump at all | 386 | 8.0% |
+| indirect jump | 61 | 1.3% |
+
+The 80.6% is the useful number, and it strengthens the interiority claim rather than the thunk one: a
+standalone thunk the symbol table failed to name would jump to another function's *entry*, and only
+487 do. Four in five of these detections branch into the middle of a labelled function, which is what
+a block of that function does.
+
+**Where this leaves it.** The landing-pad reading is still the leading hypothesis — the LSDA
+correlation is perfect, the enclosing functions carry no indirect jump, and four in five of the
+detections behave like interior blocks. It is not confirmed, and neither instrument I reached for
+could confirm it. Doing so needs a correct `.eh_frame` walk that reads each FDE's augmentation for
+its LSDA pointer and decodes the call-site table with `LPStart` defaulting to that FDE's function
+start. That is the next step, and until it is done this is a hypothesis with strong circumstantial
+support, not a finding.
+
+The 487 that jump to a labelled entry are a separate and smaller result: those are real code the
+symbol table does not name, the same completeness effect already measured on the malware corpus,
+and they are not false positives at all.
