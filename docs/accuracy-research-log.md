@@ -1975,3 +1975,49 @@ so the false-positive column was silently overwritten by the true-positive one a
 figure printed was the wrong quantity. Re-deriving the same number a second way, out of a different
 script, is what caught it. A zero with three healthy controls beside it is still only as good as the
 line that computed it.
+
+---
+
+## 2026-08-25 — what the landing-pad rule cost, and where
+
+The repaired benchmark reported the branch inconclusive three times running, but with the median
+drifting: **+0.82%**, **−0.84%**, **−2.31%**. The band absorbed all three, and a band absorbing
+something is not the same as nothing being there, so the last one was measured directly instead.
+
+Same machine, both commits checked out into one directory in turn, leading side rotated per pass,
+min of three, on the malware dumps — the corpus CI measures, and one the rule fires on **not at all**
+(function count 24,270 either way):
+
+| | median speedup | 95% CI | p | sum of best times |
+|---|---|---|---|---|
+| the rule as landed | −1.60% | [−2.94%, −0.62%] | **0.0000** | 31.90 s → 33.11 s (**+3.8%**) |
+| after the hoist below | −1.07% | [−2.42%, +0.86%] | 0.4132 | 32.80 s → 32.91 s (+0.3%) |
+| **control: the same commit on both sides** | −0.14% | [−0.88%, +1.14%] | 0.962 | 32.98 s → 32.90 s |
+
+The control is what makes the first row readable. It says the harness has no side bias, so a CI
+excluding zero at p = 0.0000 on a corpus where the rule changes nothing is a real cost and not the
+ordering.
+
+### It was not the lookup
+
+Instrumenting `declaredFdeRangeContaining` and `ehFrameFdeRanges` over the whole corpus: **zero calls
+to either**. Those images are 32-bit or carry no `endbr64` at all, so the predicate never runs. What
+was being paid was the *test* — `if refuse_declared_interior and self.opensInsideDeclaredFdeRange(...)`
+sitting inside the per-match loop of every seeded pattern — not the work behind it.
+
+Resolving it once before the loop (`refuse_declared_interior and bool(self.ehFrameFdeRanges())`)
+collapses it to nothing on any image with no `.eh_frame`, which is every PE, Mach-O and dump here.
+The recovered sets are identical on all ten C/C++ cells the rule moves, which is the control that
+this is a hoist rather than a change.
+
+Reading it back: a guard's cost is not the cost of what it guards. The measurement that would have
+misled here is the obvious one — profile the predicate, find it takes no time, conclude the change
+is free. It takes no time because it never runs, and the branch in front of it is the whole expense.
+
+### What it broke, and why that is the same lesson as before
+
+Resolving the lookup earlier reaches `getLiefBinary()` on every 64-bit image, and two test doubles
+did not implement it — the same duck-type gap that made `MockBinaryInfo` gain `getExceptionDirectory`
+when the exception-table fix landed. Both now return `None`, which is what a raw buffer with no
+container declares. Eight tests failed and named the accessor outright, so the suite located it in
+one run.
