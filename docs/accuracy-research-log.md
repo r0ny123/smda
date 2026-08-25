@@ -3266,3 +3266,41 @@ Both avenues are closed on evidence rather than on judgement, and neither is wor
 without a different corpus. The surviving directories that no pass reads are the import table and the
 IAT, both of which name imported APIs rather than the sample's own functions, and the export table,
 present in 13 of 48 and already consumed by the symbol provider where it is.
+
+### The check the format guarantees and the decoder was not making
+
+Following the landing-pad rule onto the NativeAOT cell — a 2 MB ELF, the only managed sample with an
+`.eh_frame` — turned up a decode producing 4,826 addresses out of an image whose landing pads should
+be zero. Reading the LSDA headers it was handed says why:
+
+| LPStart enc | ttype enc | call-site enc | count |
+|---|---|---|---|
+| `0x00` | `0x81` | `0x00` | 326 |
+| `0x00` | `0x81` | `0x80` | 274 |
+| `0x01` | `0xae` | omit | 118 |
+| `0x00` | `0xd6` | `0x65` | 62 |
+| `0x00` | `0x16` | `0xcf` | 60 |
+
+Those are not LSDA headers. The FDE's LSDA pointer is leading into arbitrary bytes, most of which
+the reader rejects — 4,407 of 5,344 — while 52 of them decode as a call-site table anyway and yield
+93 addresses each. The rule was inert on this image only because none of the 4,826 happened to
+coincide with a candidate, which is luck rather than design.
+
+The format already guarantees the check that separates the two cases: **a landing pad is interior to
+the function its own FDE names**. Measured before implementing it:
+
+| corpus | decoded pads | inside their own FDE | outside |
+|---|---|---|---|
+| Built C/C++ | 25,748 | 25,748 | **0** |
+| AArch64 ELF | 12,585 | 12,585 | **0** |
+| Rust ELF | 2,882 | 2,882 | **0** |
+| `libstdc++.so.6`, `python3`, `libc.so.6` | 2,666 | 2,666 | **0** |
+| NativeAOT | 4,828 | **0** | 4,828 |
+
+Perfect separation: 43,881 real pads, not one outside; 4,828 spurious, not one inside. Filtering on
+it keeps every measured pad count identical and takes the NativeAOT image to zero.
+
+This is the same lesson as the ttype-offset guard earlier in this entry, arriving from the other
+direction. There the reader failed to reject bytes it could not read; here it read bytes it should
+never have trusted. A decoder that only checks whether the bytes *parse* will accept anything that
+happens to; what stops it is a property the format promises about what it decodes to.

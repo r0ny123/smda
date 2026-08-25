@@ -320,10 +320,10 @@ class EhFrameLandingPadWalkTest(unittest.TestCase):
             section += (len(body) + 4).to_bytes(4, "little") + cie_pointer.to_bytes(4, "little") + body
         return section
 
-    def fdeBody(self, lsda_va, initial_location=0x2000):
+    def fdeBody(self, lsda_va, initial_location=0x2000, address_range=0x100):
         return (
             initial_location.to_bytes(4, "little")
-            + (0x100).to_bytes(4, "little")
+            + address_range.to_bytes(4, "little")
             + bytes([0x04])
             + lsda_va.to_bytes(4, "little")
         )
@@ -356,6 +356,19 @@ class EhFrameLandingPadWalkTest(unittest.TestCase):
             return self.LSDA_BYTES
 
         return decodeEhFrameLandingPads(self.sectionWith(*fde_bodies), 0x1000, counting_read), reads
+
+    def testAPadOutsideTheRangeItsOwnFdeDeclaresIsRefused(self):
+        """The check that separates a real table from a pointer that led into arbitrary bytes.
+
+        An LSDA pointer can land on data that decodes as a call-site table anyway, and the
+        addresses it then yields are noise. A landing pad is interior to the function its own
+        FDE names, so a decoded address outside that range did not come from a real table.
+        """
+        # control: the pad sits 0x20 into a function 0x100 long, and is reported
+        self.assertEqual(self.decodeFde(self.fdeBody(self.LSDA_VA)), {0x2020})
+        # the same table under an FDE declaring a function only 0x10 long puts the pad past
+        # its end, and nothing is reported
+        self.assertEqual(self.decodeFde(self.fdeBody(self.LSDA_VA, address_range=0x10)), set())
 
     def testEveryFdeNamingTheSameLsdaDecodesItOnce(self):
         """One LSDA serves one function, but nothing stops an image pointing every FDE at one.
