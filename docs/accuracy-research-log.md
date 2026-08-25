@@ -2804,3 +2804,48 @@ inside the engine, because the only instrument the engine has is the one that pr
 Anything that reaches this class has to bring evidence from outside the disassembly: a declared
 entry, an unwind record, a symbol, a relocation. Which is the same conclusion the landing-pad work
 and the gap-scan position family both arrived at by different routes, now with a mechanism attached.
+
+---
+
+## 2026-08-25 — the endbr64 ceiling: the proposed repair cannot work, and why
+
+Section 13's largest precision item ends with an unmeasured claim: that the repair "belongs after
+analysis, as a filter on candidates the jump-table pass has claimed", with the ceiling being the
+non-declared landing pads minus however many that pass does not resolve. Measuring the overlap over
+the 140 ELF cells of the C/C++ corpus, no cell skipped:
+
+| | count | of which the jump-table pass resolved |
+|---|---|---|
+| false positives, all | 10,389 | – |
+| **false positives opening with `endbr64`** | **5,076** | **0 (0.0%)** |
+| true positives opening with `endbr64` | 61,119 | 2 |
+
+**Not one.** Against 46,411 jump-table targets resolved across the same run, so the hook is live; and
+the intersection does work, because it catches two true positives. This is a zero with its controls.
+
+**It is a zero by construction, which is the finding.** When the jump-table pass resolves an address,
+that address becomes a *block of the enclosing function* — it never becomes a function of its own. So
+the resolved targets and the spurious functions are disjoint sets by definition: the spurious pads are
+exactly the case bodies the pass **failed** to resolve. A filter on what the pass claimed can never
+reach them.
+
+The shape confirms it. Every one of the 5,076 sits strictly between two consecutive truth starts:
+
+| | |
+|---|---|
+| strictly inside a real function | **5,076 (100.0%)** |
+| before the first truth start | 0 |
+| distinct real functions they shatter | 1,846 |
+| average pads per shattered function | 2.7 |
+
+and 121 of those functions carry eight or more spurious pads apiece, which is a dispatch nobody
+resolved rather than a scattering of bad guesses.
+
+**So the item is re-ranked rather than closed.** The lever is not a filter at all — it is jump-table
+resolution itself. Every case body the pass learns to resolve stops being a false positive *and*
+stops shattering a real function, in one move, with no recall cost by construction because the
+address stays in the report as a block. The 5,076 are worth roughly 5 points of precision on this
+corpus and they are the *symptom*; the disease is 1,846 unresolved dispatches.
+
+That also makes this the one item on the agenda whose fix cannot fail the no-recall-drop gate, which
+moves it to the top.
