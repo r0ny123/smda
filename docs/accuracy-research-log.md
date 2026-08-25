@@ -2123,3 +2123,57 @@ Two cautions on the corpus. These are mingw PE Rust binaries, so the alignment p
 property of that linker rather than of Rust; a second corpus has to confirm it before anything is
 built on it. And the gap scan contributing 3,464 real functions here is worth stating beside the
 6,093 — it is not a pass that could simply be turned down.
+
+---
+
+## 2026-08-25 — the synthesizer's size guard measures the wrong span
+
+`Fuzz (fuzz_synthesis)` went red with a `MemoryError` in `ElfSynthesizer._synthesizeMinimal`. It is
+not this branch's: nothing here touches `src/smda/synthesis/`, and the same input reproduces on
+`origin/master` at `802e627`.
+
+`BinarySynthesizer._resolveFunctionOffsets` refuses a report whose functions are too far apart to
+rebuild, and sizes that refusal as `max(extent_end) - min(offset)`. The layout it protects,
+`_syntheticSpan`, sizes the image as `max(max(extent_end), max(offset) + 1) - min(offset)` — the
+second term was added so that a report whose blocks sit *below* their own function offset does not
+produce an inverted span. The guard never learned about it, so exactly that shape walks past a
+100 MB cap into an allocation of any size.
+
+Two functions, one at `0x1000` and one at `0x40000000`, both holding a single `ret` block at
+`0x1000`:
+
+| | guard span | image `_syntheticSpan` lays out |
+|---|---|---|
+| offsets far apart, blocks together | `0x1` — passes | `[0x1000, 0x40000010)` = **1024 MB** |
+| offsets *and* blocks far apart | `0x3ffff001` — refused | — |
+
+The second row is the control: the guard does fire on the shape it measures. Under a 2 GB
+`RLIMIT_AS` the first row raises `MemoryError` at `synthesize:89 ← _synthesizeMinimal:576 ←
+_nopFill:141`, which is the CI traceback frame for frame.
+
+Reach across the three formats, same report:
+
+- **ELF** — `MemoryError`, via `_synthesizeMinimal`.
+- **Mach-O** — `MemoryError`, via `_synthesizeMinimal` → `_synthesizeFromSections` →
+  `_prepareSections`. Same defect, different route.
+- **PE** — succeeds, because `_synthesizeMinimal` there sizes `.text` from extent ends only, which
+  the guard does bound. It is immune to the crash and *not* correct: it emits a 4,608-byte image
+  with one `.text` at `0x1000`, no section describing `0x40000000`, and **no warning**. The declared
+  function is silently gone.
+
+The fix is one line at admission — measure what the layout will measure:
+
+```python
+extent_end = max(self._functionExtentEnd(self.report.xcfg[offset]) for offset in resolved)
+span = max(extent_end, resolved[-1] + 1) - resolved[0]
+```
+
+Applied to `origin/master`, all three formats raise the guard's own `ValueError`, which the fuzz
+oracle already lists as a documented malformed-input outcome; `testSynthesis`, `testFuzzRegressions`
+and `testFuzzCorpus` stay green (79 passed, 193 subtests, exit 0). It covers the two `uncovered`
+sub-span call sites for free, because those pass a subset of the same resolved offsets. The PE row
+changes from silent omission to a stated refusal, which is the direction worth having.
+
+Not landed here. It is a pre-existing defect in code this branch does not touch, and widening an
+accuracy PR into the synthesizer is the wrong place for it — reported on the PR with the patch
+instead.
