@@ -303,6 +303,17 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 )
                 self.gap_pointer = self.getNextGap()
                 continue
+            if self.config.USE_LSDA_LANDING_PADS and self.isDeclaredLandingPad(self.gap_pointer):
+                # The image's own LSDA says the unwinder resumes here, which puts the address
+                # inside a function by construction. Under -fcf-protection it opens with an
+                # endbr64 and sits in a gap precisely because nothing in the function branches
+                # to it, so a byte scan reads it as an entry and nothing earlier contradicts.
+                LOGGER.debug(
+                    "nextGapCandidate() gap_ptr is a declared landing pad: 0x%08x",
+                    self.gap_pointer,
+                )
+                self.gap_pointer = self.declaredLandingPadSkipTarget(self.gap_pointer) or self.gap_pointer + 1
+                continue
             # we may have a candidate here
             LOGGER.debug("nextGapCandidate() using 0x%08x as candidate", self.gap_pointer)
             start_byte = byte[0] if byte else 0

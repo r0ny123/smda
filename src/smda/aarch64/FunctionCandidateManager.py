@@ -709,6 +709,13 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
             if not is_function_prologue(word):
                 continue
             addr = (base + match_count * INSTRUCTION_SIZE) & self.getBitMask()
+            if self.config.USE_LSDA_LANDING_PADS and self.isDeclaredLandingPad(addr):
+                # A declared landing pad is interior by construction, so it is never a
+                # prologue however much it looks like one. The x86 scan needs no equivalent:
+                # an endbr64 is not one of its prologue shapes, so pads reach it only through
+                # the gap scan. Here `bti` is a recognized entry prologue, which puts every
+                # pad in front of this loop.
+                continue
             if is_bti_landing_pad(word) and self._isLikelyInteriorBtiCandidate(addr):
                 continue
             if not self._passesCodeFilter(addr):
@@ -888,6 +895,15 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
             word = words[offset // INSTRUCTION_SIZE]
             if word in (0, NOP):  # inter-function padding
                 self.gap_pointer += INSTRUCTION_SIZE
+                continue
+            if self.config.USE_LSDA_LANDING_PADS and self.isDeclaredLandingPad(self.gap_pointer):
+                # The image's own LSDA says the unwinder resumes here, so the address is
+                # interior by construction. This has to precede the shape test below rather
+                # than back it up: under -mbranch-protection every pad opens with a bti, and
+                # the shape test then reads the bti as evidence of a legitimate indirect-call
+                # target instead of as a pad.
+                skip = self.declaredLandingPadSkipTarget(self.gap_pointer)
+                self.gap_pointer = skip or self.gap_pointer + INSTRUCTION_SIZE
                 continue
             if is_bti_landing_pad(word) and self._isLikelyInteriorBtiCandidate(self.gap_pointer):
                 self.gap_pointer += INSTRUCTION_SIZE

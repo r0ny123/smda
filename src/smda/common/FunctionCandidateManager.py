@@ -20,7 +20,7 @@ from smda.utility.BracketQueue import BracketQueue
 from smda.utility.MachoBinary import get_active_macho_binary, get_macho_address_adjustment
 from smda.utility.PriorityQueue import PriorityQueue
 
-from .EhFrameDecoder import decodeEhFrameFdeRanges, decodeEhFrameHdrStarts
+from .EhFrameDecoder import decodeEhFrameFdeRanges, decodeEhFrameHdrStarts, decodeEhFrameLandingPads
 from .LanguageAnalyzer import LanguageAnalyzer
 
 LOGGER = logging.getLogger(__name__)
@@ -61,10 +61,12 @@ class FunctionCandidateManager:
         self._cb_analysis_timeout = None
         self._eh_frame_fde_ranges = None
         self._eh_frame_fde_starts = []
+        self._declared_landing_pads = None
 
     def init(self, disassembly, cbAnalysisTimeout=None):
         self._eh_frame_fde_ranges = None
         self._eh_frame_fde_starts = []
+        self._declared_landing_pads = None
         if disassembly.binary_info.code_areas:
             self._code_areas = disassembly.binary_info.code_areas
         self.disassembly = disassembly
@@ -551,6 +553,51 @@ class FunctionCandidateManager:
         self._eh_frame_fde_ranges = ranges
         self._eh_frame_fde_starts = [start for start, _ in ranges]
         return ranges
+
+    def declaredLandingPads(self):
+        """Every exception landing pad the image's own LSDAs declare.
+
+        A landing pad is where the personality routine resumes, so it is interior to a function
+        by construction and is never a function start. Under `-fcf-protection` each carries an
+        `endbr64`, which is why a scan looking for entry shapes finds them at all. Decoded once
+        per binary; an image with no `.eh_frame`, or none carrying an 'L' augmentation, declares
+        none and every rule built on this is inert on it.
+        """
+        if getattr(self, "_declared_landing_pads", None) is not None:
+            return self._declared_landing_pads
+        pads = set()
+        binary_info = self.disassembly.binary_info
+        lief_binary = binary_info.getLiefBinary()
+        if isinstance(lief_binary, lief.ELF.Binary):
+            eh_frame = next((section for section in lief_binary.sections if section.name == ".eh_frame"), None)
+            if eh_frame is not None and eh_frame.virtual_address and eh_frame.size:
+                section_bytes = self.disassembly.getBytes(eh_frame.virtual_address, eh_frame.size)
+                if section_bytes:
+                    pointer_size = 8 if binary_info.bitness == 64 else 4
+                    pads = decodeEhFrameLandingPads(
+                        bytes(section_bytes),
+                        eh_frame.virtual_address,
+                        lambda addr, length: bytes(self.disassembly.getBytes(addr, length) or b""),
+                        pointer_size=pointer_size,
+                    )
+        self._declared_landing_pads = pads
+        return pads
+
+    def isDeclaredLandingPad(self, addr):
+        return addr in self.declaredLandingPads()
+
+    def declaredLandingPadSkipTarget(self, addr):
+        """Where a gap scan should resume after refusing the declared landing pad at `addr`.
+
+        The end of the FDE that declares it, or None when the image declares no range around
+        it. Everything between a landing pad and the end of its own function is that
+        function's body, so resuming there skips interior addresses only. Resuming one
+        instruction on instead lands inside the pad, and the scan books that in the pad's
+        place -- a worse candidate than the one just refused, because it opens mid-body and
+        its analysis runs on through whatever follows.
+        """
+        containing = self.declaredFdeRangeContaining(addr)
+        return containing[1] if containing else None
 
     def declaredFdeRangeContaining(self, addr):
         """The declared FDE range `addr` falls inside, or None when it starts one or is outside.

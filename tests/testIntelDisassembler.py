@@ -1334,6 +1334,21 @@ class StubChainCandidateTestSuite(unittest.TestCase):
         self.assertEqual([base, base + 16], manager.recovered)
         self.assertTrue(set(range(base + 7, base + 12)).issubset(manager.disassembly.data_map))
 
+    def test_a_plt_sec_stub_outside_every_code_area_is_not_booked(self):
+        entry = b"\xf3\x0f\x1e\xfa\xf2\xff\x25\x11\x22\x33\x44\x0f\x1f\x44\x00\x00"
+        chain = entry + entry
+        base = _StubChainCandidateManager.BASE_ADDR + len(self.PAD)
+
+        # control: with no code areas declared the same chain books both entries, so the empty
+        # result below is the filter rather than the regex failing to match
+        self.assertEqual([base, base + 16], self._locate(chain).recovered)
+
+        manager = _StubChainCandidateManager(self.PAD + chain + self.PAD)
+        manager._code_areas = [(base + 0x1000, base + 0x2000)]
+        manager.locateStubChainCandidates()
+
+        self.assertEqual([], manager.recovered)
+
     def test_a_lone_stub_is_not_a_chain(self):
         manager = self._locate(b"\xff\x25\x11\x22\x33\x44")
 

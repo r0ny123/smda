@@ -336,18 +336,13 @@ class BenchConfigOverrideTest(unittest.TestCase):
     def testABooleanOverrideIsAppliedAndTheDefaultIsLeftAlone(self):
         from smda.SmdaConfig import SmdaConfig
 
-        # control: the class default is what an un-overridden run gets, so the assertion below
-        # is about the override rather than about the shipped value
-        self.assertFalse(SmdaConfig.USE_LSDA_LANDING_PADS)
-        self.assertFalse(smdaConfigFrom({}).USE_LSDA_LANDING_PADS)
+        # control: an un-overridden run gets the class default, whatever that is, so the
+        # assertions below are about the override rather than about the shipped value
+        self.assertEqual(smdaConfigFrom({}).RESOLVE_TAILCALLS, SmdaConfig.RESOLVE_TAILCALLS)
         for spelling in ("1", "true", "yes", "on", "TRUE"):
-            self.assertTrue(
-                smdaConfigFrom({"config_overrides": {"USE_LSDA_LANDING_PADS": spelling}}).USE_LSDA_LANDING_PADS
-            )
+            self.assertTrue(smdaConfigFrom({"config_overrides": {"RESOLVE_TAILCALLS": spelling}}).RESOLVE_TAILCALLS)
         for spelling in ("0", "false", "no", "off"):
-            self.assertFalse(
-                smdaConfigFrom({"config_overrides": {"USE_LSDA_LANDING_PADS": spelling}}).USE_LSDA_LANDING_PADS
-            )
+            self.assertFalse(smdaConfigFrom({"config_overrides": {"RESOLVE_TAILCALLS": spelling}}).RESOLVE_TAILCALLS)
 
     def testAnIntegerOverrideAcceptsTheBaseItIsWrittenIn(self):
         self.assertEqual(
@@ -364,12 +359,12 @@ class BenchConfigOverrideTest(unittest.TestCase):
     def testTheOverridesAreRecordedInTheEngineDescription(self):
         from bench.engines.smda_engine import SmdaEngine
 
-        config = smdaConfigFrom({"config_overrides": {"USE_LSDA_LANDING_PADS": "1"}})
-        self.assertEqual(SmdaEngine(config=config).describe()["config_overrides"], {"USE_LSDA_LANDING_PADS": True})
+        config = smdaConfigFrom({"config_overrides": {"RESOLVE_TAILCALLS": "1"}})
+        self.assertEqual(SmdaEngine(config=config).describe()["config_overrides"], {"RESOLVE_TAILCALLS": True})
         # a run at stock settings must record nothing, or every result would claim an override
         self.assertEqual(SmdaEngine(config=smdaConfigFrom({})).describe()["config_overrides"], {})
 
     def testRepeatedSetFlagsAccumulate(self):
-        args = parseArgs(["--set", "USE_LSDA_LANDING_PADS=1", "--set", "RESOLVE_TAILCALLS=1"])
-        self.assertEqual(args.config_set, ["USE_LSDA_LANDING_PADS=1", "RESOLVE_TAILCALLS=1"])
+        args = parseArgs(["--set", "USE_MACHO_FUNCTION_STARTS=1", "--set", "RESOLVE_TAILCALLS=1"])
+        self.assertEqual(args.config_set, ["USE_MACHO_FUNCTION_STARTS=1", "RESOLVE_TAILCALLS=1"])
         self.assertEqual(parseArgs([]).config_set, [])

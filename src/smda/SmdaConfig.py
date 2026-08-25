@@ -71,6 +71,25 @@ class SmdaConfig:
     # and 5 fewer functions that no symbol names. Off by default because it moves 5 of the 12
     # Mach-O corpus samples, all upwards - a deliberate baseline update, not a config edit
     USE_MACHO_FUNCTION_STARTS = False
+    # Refuse a candidate at an address the image's own .gcc_except_table declares as an
+    # exception landing pad, and resume the scan at the end of the FDE that declares it. A
+    # landing pad is where the personality routine resumes, so it is interior to a function by
+    # construction; it opens with the instruction set's indirect-branch marker (endbr64 under
+    # -fcf-protection, bti under -mbranch-protection) and sits in a gap because nothing in the
+    # function branches to it, which is exactly what a scan looking for entry shapes reads as
+    # an entry. The resume point is the whole decision: stepping one instruction on lands
+    # inside the pad, and the scan books that instead - a worse candidate than the one refused.
+    # Resuming at the declaring FDE's end passes over that function's body only; over the three
+    # corpora that carry pads, 0 of 41,215 have a declared function start between the pad and
+    # that end. Measured against compiler symbol tables, macro means:
+    #   260 built C/C++ cells    PPV 92.623 -> 94.109 at TPR 95.525 -> 95.595 (+193 recovered)
+    #   72 AArch64 ELF cells     PPV 76.676 -> 79.172 at TPR 95.939 -> 95.963 (+15 recovered)
+    #   24 Rust cells            PPV 78.951 -> 82.435 at TPR 97.493 -> 97.578 (+13 recovered)
+    # 12,453 false positives removed, 221 real functions gained, no corpus loses recall. Go,
+    # ARM64 Mach-O and .NET are bit-identical, which is the control that it reaches only ELF
+    # images carrying an LSDA. It also pays for itself: on the two cells with the most pads,
+    # analysis is 3.8% faster, because the candidates it refuses are ones nothing then analyses.
+    USE_LSDA_LANDING_PADS = True
     RESOLVE_REGISTER_CALLS = True
     # resolve "call/jmp dword ptr [<reg> + <disp>]" against a runtime-built import table and
     # record the API plus the slot it lives in; annotation only, it books no code refs

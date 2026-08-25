@@ -1166,3 +1166,58 @@ it has to bring evidence the *image* declares — an entry, an unwind record, a 
 rather than evidence the engine derived. Section 20's landing-pad rule and the gap-scan position
 family in the log both arrived at that conclusion by different routes; this is the first time it
 comes with a measured mechanism rather than an inference.
+
+## 23. Fix landed: the declared landing pad, and the resume point that decides whether it costs recall
+
+Section 20 landed half of this: an `endbr64` prologue seed opening strictly inside a declared FDE
+range is refused. It left the other half open — "the gap scan, built and rejected", because the same
+interior test applied there cost every CET PLT stub, 179 of 179 on one cell, recall 99.581 to 84.673.
+Section 21 left the AArch64 sibling in the same state, measured and refused by the gate: 2,861 false
+positives removed for **one** true positive lost.
+
+Both are now landed, by replacing the interior test with a narrower one and — the part that actually
+decides it — by choosing where the scan resumes.
+
+**The predicate.** Not "is this address inside a declared function" but "is this address one the
+image declares as an exception landing pad". Each FDE whose CIE announces `L` points at its LSDA;
+the LSDA's call-site table names each pad as an offset from `LPStart`, which defaults to the
+function start the FDE names rather than to zero. That is a strictly smaller set than "interior",
+and it contains no PLT stub, which is why the PLT collapse that stopped section 20 does not occur.
+
+**The resume point.** Refusing the pad is not enough. Stepping one instruction past it lands *inside*
+the pad, and the scan books that instead — a worse candidate than the one just refused, because it
+opens mid-body and its analysis runs on through whatever follows. Traced on
+`googletest_gcc-arm64_O2`: refusing the declared pad at `0x1dd60`, the scan books `0x1dd64` and the resulting
+function swallows two real ones. That single behaviour is the difference between the rule costing 5
+true positives on the AArch64 corpus and gaining 15.
+
+Resuming at the end of the FDE that declares the pad passes over that function's body and nothing
+else. Checked rather than assumed, by counting true starts lying strictly between a pad and that
+end: **0 of 41,215 pads** across the three corpora that carry any.
+
+**The sibling, swept.** x86 books declared pads through the gap scan only — `endbr64` is not one of
+its prologue shapes. AArch64 books them through **both** the gap scan and `locatePrologueCandidates`,
+because `bti` *is* a recognized entry prologue there; on a small C++ fixture the prologue scan books
+all five and the gap scan none. Its existing `_isLikelyInteriorBtiCandidate` shape test is what lets
+them through: under `-mbranch-protection` every pad opens with a `bti`, and the test reads that as
+evidence of a legitimate indirect-call target. Before any rule, the AArch64 corpus declares 12,585
+pads, the engine books **4,108** of them as functions, and **0** of the 12,585 is a real start.
+
+**Result**, six corpora, both sides run back to back on one tree:
+
+| corpus | n | PPV | TPR | F1 | dTP | dFP |
+|---|---|---|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | 92.623 → **94.109** | 95.525 → **95.595** | 93.875 → 94.718 | +193 | −7,312 |
+| Built C/C++ AArch64 (gcc cross) | 72 | 76.676 → **79.172** | 95.939 → **95.963** | 84.852 → 86.632 | +15 | −4,487 |
+| Built Rust (gnu targets) | 24 | 78.951 → **82.435** | 97.493 → **97.578** | 87.185 → 89.192 | +13 | −654 |
+| Built Go, ARM64 Mach-O, Built .NET | 60 | — | — | bit-identical | 0 | 0 |
+
+12,453 false positives removed and 221 real functions gained, with recall up on every corpus that
+moves. The three unchanged corpora are the control that the rule reaches only ELF images carrying an
+LSDA. It ships **on by default**: no pre-existing bundled fixture moves, and on the two cells with
+the most pads analysis is 3.8% faster, because the candidates it refuses are ones nothing then
+analyses.
+
+This is the first change on this branch to improve precision and recall together on three corpora at
+once, and it is the same lesson section 22 reaches from the other end — the evidence that works is
+what the *image* declares, not what the engine derives.

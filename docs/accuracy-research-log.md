@@ -2997,3 +2997,188 @@ That places the fix precisely: not a wider prologue rule, but a gap-scan rule �
 promote an address the image declares as a landing pad. It also explains the earlier finding that
 these detections sit in functions with no indirect jump: the gap scan is not following a dispatch, it
 is filling a hole, and a landing pad is a hole because nothing in the function branches to it.
+
+## 2026-08-25 — the LSDA landing-pad rule, and the resume point that decides whether it costs recall
+
+The `endbr64` work established what the spurious pads are: 98.7% of them are addresses the image's
+own `.gcc_except_table` declares as exception landing pads, and all of them are booked by the gap
+scan. This is the rule built on that, the sibling site it turned up in the AArch64 backend, and the
+one design decision that separates a rule which costs recall from one that gains it.
+
+### Reading the declaration
+
+`.eh_frame` already had a decoder here; it did not read LSDAs. Each FDE whose CIE announces `L` in
+its augmentation string opens its augmentation data with a pointer to its LSDA, and the LSDA's
+call-site table names each landing pad as an offset from `LPStart` — which **defaults to the
+function start the FDE names**, not to zero. An earlier probe that assumed zero compared section
+offsets against absolute addresses and reported 0 of 4,818, a zero guaranteed by construction.
+
+Two contract bugs in the reader had to be fixed before any of it decoded:
+
+- `_read_encoded_value` refuses the leb128 formats by contract, on the grounds that leb128 pointers
+  are rare in `.eh_frame`. That is true of FDE pointers and false of call-site tables, where
+  uleb128 is exactly what gcc emits — so every table read as empty rather than as unreadable. A
+  separate `_read_lsda_value` admits leb128 without widening what the FDE walk will decode.
+- `_read_uleb128` signals failure through its **value**, returning `(None, pos)` where `pos` is
+  always an int. A guard written as `if pos is None` after the ttype-offset read therefore never
+  fired, and a corrupted cursor went on to decode the call-site table. Not dead code: on a
+  constructed table the pre-fix tree returns a fabricated pad at `0x2020` where the fixed tree
+  returns None.
+
+Both are now covered by contract tests, and the decoder refuses the application modes it cannot
+apply — datarel/textrel/funcrel would otherwise be read as absolute, which does not fail, it
+silently yields a different address.
+
+### One record walk, not two
+
+The landing-pad walk began as a copy of `decodeEhFrameFdeRanges`'s record-boundary logic: the same
+thirty lines of length, extended-length, record-end and CIE-pointer handling. A defect fixed in one
+would have survived in the other, so both now drive off one `_walkEhFrameFdes` generator. The
+refactor is output-identical over **21,798 FDE ranges across 12 sections**, four of them large
+system libraries (`libstdc++.so.6`, `python3`, `bash`, `libc.so.6`), with a positive control that
+8 of the 12 decode non-empty.
+
+### The sibling: AArch64 books the same pads, through two passes
+
+x86 books declared pads only through the gap scan — `endbr64` is not one of the prologue scan's
+shapes. AArch64 is worse on both counts. `bti` **is** a recognized entry prologue there, so pads
+reach `locatePrologueCandidates` as well, and on a small C++ fixture that pass books all five of
+them while the gap scan books none.
+
+Measured over the 72-cell AArch64 ELF corpus before any rule:
+
+| | |
+|---|---|
+| declared landing pads | 12,585 |
+| booked as functions by the current engine | 4,108 |
+| of those pads, ones the compiler's symbol table calls a real start | **0** |
+
+The `-bti` cells are the extreme: `googletest_gcc-arm64_O2-bti` books **1,219 of 1,219**. The
+existing `_isLikelyInteriorBtiCandidate` shape test is what lets them through — under
+`-mbranch-protection` every pad opens with a `bti`, and the test reads that as evidence of a
+legitimate indirect-call target. A declaration beats a shape, so the rule has to run before it.
+
+### The resume point is the whole decision
+
+The first version stepped one instruction past a refused pad. On AArch64 that **cost 5 true
+positives** while removing 553 false ones, and the trace says exactly why: refusing the pad at
+`0x1dd60`, the scan books `0x1dd64` — one instruction *into* the pad — and that bogus function then
+runs forward over two real functions the pad's own would have stopped short of. Booking the word
+after the pad is a worse candidate than booking the pad.
+
+The fix is to resume where the image says the function ends: `declaredLandingPadSkipTarget` returns
+the end of the FDE that declares the pad. Everything between a landing pad and the end of its own
+function is that function's body, so the skip passes over interior addresses only.
+
+That is checkable rather than assumed. Counting true starts lying strictly between a pad and its
+declaring FDE's end:
+
+| corpus | samples with pads | declared pads | truth starts the skip would step over |
+|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 44 | 25,748 | **0** |
+| AArch64 ELF | 23 | 12,585 | **0** |
+| Rust ELF | 8 | 2,882 | **0** |
+
+41,215 pads, nothing at risk — which is why the skip turns a recall cost into a recall gain rather
+than merely reducing it. The hazard it was checked against is real and recorded: a whole PLT block
+sits under a single FDE, so a resume point landing inside one would lose every stub after the first.
+
+### Three resume points on the AArch64 corpus, n=72, micro
+
+| variant | TPR | PPV | recovered | detections |
+|---|---|---|---|---|
+| rule off | 97.923 | 79.529 | 54,961 | 69,108 |
+| refuse the pad, resume one instruction on | 97.914 | 80.163 | 54,956 | 68,555 |
+| refuse the pad, resume at the declaring FDE's end | **97.949** | **81.551** | **54,976** | 67,413 |
+
+The one-instruction variant is also what cost 8 Rust true positives when this was first
+measured; the FDE-end variant gains 13 there instead. Those two Rust figures come from different
+runs and are not put in one table.
+
+This supersedes the BTI sibling recorded in report section 21 as measured-and-rejected: that one
+removed 2,861 false positives for **one** true positive lost, and the gate refused it. The rule
+here removes more and loses none.
+
+### End to end, six corpora, one tree, both sides back to back
+
+`tools/bench/run.py --corpus native,native-arm64,rust,go,macho-arm64,dotnet --engine smda`,
+one side per configuration. The rule shipped on as a result of this run, so reproducing the
+baseline now means `--set USE_LSDA_LANDING_PADS=0` on the *before* side rather than `=1` on the
+after side. Macro means, filter `all`, 0 failed samples on either side.
+
+| corpus | n | PPV | TPR | F1 | dTP | dFP |
+|---|---|---|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | 92.623 -> **94.109** | 95.525 -> **95.595** | 93.875 -> 94.718 | +193 | -7,312 |
+| Built C/C++ AArch64 (gcc cross) | 72 | 76.676 -> **79.172** | 95.939 -> **95.963** | 84.852 -> 86.632 | +15 | -4,487 |
+| Built Rust (gnu targets) | 24 | 78.951 -> **82.435** | 97.493 -> **97.578** | 87.185 -> 89.192 | +13 | -654 |
+| Built Go (pclntab truth) | 45 | 95.111 | 99.618 | 97.266 | 0 | 0 |
+| ARM64 Mach-O (LC_FUNCTION_STARTS) | 11 | 94.220 | 96.711 | 95.074 | 0 | 0 |
+| Built .NET (CIL and NativeAOT) | 4 | 93.589 | 99.461 | 96.124 | 0 | 0 |
+
+**12,453 false positives removed, 221 real functions gained, recall up on every corpus that moves
+and identical on the rest.** `summarize.py --compare` reports `compared=6` and
+`[ok] no TPR regression on any compared config`.
+
+The three unchanged corpora are the reach control: Go emits no `.eh_frame` at all (21 ELF samples,
+0 declaring a pad), and the Mach-O and .NET rows have no section for the rule to read. A rule that
+moved them would be doing something other than what it claims.
+
+The baseline side reproduces the published figures exactly — 92.623 / 95.525 / 93.875 on the 260
+C/C++ cells and 76.676 / 95.939 / 84.852 on the AArch64 cells — and the recovered-function counts
+agree to the unit with an independent scorer written for this measurement (54,961 AArch64,
+32,985 Rust), which is the cross-check that the harness and the probe are counting the same thing.
+
+### Shipped on by default
+
+The earlier version of this rule was going to ship off, because it traded recall for precision. The
+FDE-end resume point removes the trade, so the remaining question was whether it is free elsewhere:
+
+- **Frozen fixtures.** Of the 33 bundled `tests/*_xored` samples, exactly the two added with this
+  change move. No pre-existing baseline shifts.
+- **Cost.** Timed with interleaved repeats and an off-vs-off control on the same machine and
+  session: on the two cells carrying the most pads, analysis is **3.8% faster** with the rule on,
+  because the ~1,500 candidates it refuses per cell are ones nothing then analyses. On the small
+  fixtures the off-vs-off control swings -13% to +45%, so nothing is measurable there and the
+  single-pass +88% readings taken first were noise — a reminder that a per-fixture A/B without a
+  same-tree control measures the machine.
+
+### Also landed: measuring an off-by-default option without editing the library
+
+Every measurement of this kind so far meant editing `SmdaConfig` and remembering to put it back,
+which is not reproducible from the repository and leaves no record in the result of which settings
+produced it. `run.py --set NAME=VALUE` now overrides any config attribute for one run and records
+the overrides in the result JSON, derived by diffing the instance against the class defaults so a
+stock run records an empty set rather than claiming an override it does not have.
+
+### What the decode costs on input built to make it cost
+
+The rule reads a structure the analysed file controls, so its cost is a property of the input
+distribution and every fixture here is benign. Timed directly, which nothing in the test gate does:
+a 205 KB `.eh_frame` whose FDEs each name a 64 KB LSDA took **155 seconds**, scaling linearly with
+the record count. Nothing stopped it — the analysis budget is polled between candidates, and this
+walk happens inside one of them.
+
+Two bounds fix it, and which quantity they count turned out to matter more than their size:
+
+- **Decode each LSDA once.** One LSDA serves one function in a real image, but nothing stops every
+  FDE naming the same one. Memoized by `(lsda address, function start)`, because the same table
+  under a different function start declares different addresses.
+- **Bound the call-site table bytes decoded per section**, and gate the read on the same budget —
+  the reader is asked for 64 KB per LSDA, so a section naming a distinct table per record would
+  copy that much per record even with each decode declining.
+
+The first attempt charged the budget for bytes *read* rather than bytes *decoded*, and that is the
+part worth recording: a reader asked for 64 KB gets 64 KB whenever the section is big enough, so
+the budget was spent on bytes no loop ever touched. It bound on **four real binaries**, and
+`googletest_gcc-arm64_O2-static` silently lost 197 of its 2,612 pads. The comment asserting "the
+largest real section decodes under 2 MB" was written before it was measured; measured, the heaviest
+real image decodes **31 KB** of call-site tables and `libstdc++.so.6` decodes 26 KB.
+
+| shape | before | after |
+|---|---|---|
+| 10,000 FDEs naming one 64 KB LSDA | 155 s | 0.04 s |
+| 200,000 FDEs naming distinct 64 KB LSDAs | unbounded | 2.5 s, 129 reads |
+| heaviest real image (3,062 pads) | 31 KB decoded, 260x under the bound | unchanged |
+
+Real pad counts are identical either side of the bounds: 25,748 / 12,585 / 2,882 over the three
+corpora that carry any.
