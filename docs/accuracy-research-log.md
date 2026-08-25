@@ -2849,3 +2849,46 @@ corpus and they are the *symptom*; the disease is 1,846 unresolved dispatches.
 
 That also makes this the one item on the agenda whose fix cannot fail the no-recall-drop gate, which
 moves it to the top.
+
+---
+
+## 2026-08-25 — the endbr64 false positives are C++ exception landing pads
+
+Having established that the 5,076 spurious pads shatter 1,846 real functions and that the jump-table
+pass resolves none of them, the obvious reading was "unresolved switch dispatches". **That is wrong**,
+and the measurement that says so is the same instrument pointed one step further: of the 1,846
+shattered functions, **1,757 (95.2%) contain no indirect jump at all.** A function with no indirect
+branch in it cannot be hosting an unresolved jump table.
+
+Grouping the pads by what built the binary:
+
+| spurious `endbr64` pads | count | share | cells |
+|---|---|---|---|
+| C++ | **4,818** | 94.9% | 28 of 140 |
+| C | 258 | 5.1% | 112 of 140 |
+
+| carries `.gcc_except_table` | pads |
+|---|---|
+| C, no LSDA | **0** |
+| C, with LSDA | 258 |
+| C++, with LSDA | 4,818 |
+
+**Every one of the 5,076 sits in a binary carrying an LSDA, and a binary without one contributes
+exactly zero.** C++ is 20% of the cells and 95% of the pads.
+
+These are **exception landing pads**. `-fcf-protection` emits `endbr64` at every address an indirect
+branch may reach, and the personality routine transfers control to a landing pad indirectly — so gcc
+marks each one, they sit inside a function body, and nothing in that function branches to them. Which
+is exactly the 95.2% with no indirect jump.
+
+**And that puts the repair on image-declared evidence**, which is where the earlier closure said
+anything reaching this class would have to come from. `.gcc_except_table` is the image's own
+statement of where its landing pads are: an LSDA call-site table names them explicitly. A rule that
+declines to seed a prologue candidate at a declared landing pad reads a fact the compiler wrote down,
+not a fact the disassembler inferred — the same shape as the `.eh_frame` FDE rule already landed, one
+level more precise.
+
+Worth up to 5,076 false positives and 1,846 repaired function boundaries on this corpus, roughly five
+points of precision. **Correlation is not yet the claim**: this establishes that the pads only occur
+where an LSDA exists, not that the pads *are* the addresses the LSDA declares. Decoding one and
+intersecting is the next step and has to come before any of this is proposed.
