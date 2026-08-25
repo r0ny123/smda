@@ -2608,3 +2608,16 @@ and that is a better answer than the revert this started from.
 
 Not landed: this is `master`'s code and the finding is reported rather than pushed. What the two lost
 true positives are is the next thing to look at, and would decide whether a third clause closes it.
+
+### What the two cost true positives are
+
+Diffing the recovered sets directly rather than the aggregates: the predicate is a **strict subset**
+of what the shipped exemption recovers — 31 false positives dropped, 2 true positives dropped, **0
+addresses gained**, so there is no churn hiding inside the net figures.
+
+Both losses are `addReferenceCandidate` bookings: `0xb8c08e` on `feodo` and `0x1e05ae9` on `urlzone`.
+Each is a real function whose entire evidence is one call reference and no recognised entry shape —
+the same bucket the predicate refuses, and the same bucket that holds 18 of the 23 spurious
+admissions. Separating two from eighteen on a corpus of this size is not a rule, it is a coin toss
+with a good story, so no third clause is proposed. The predicate's cost is 2 functions in 21,924 and
+that is where it stands.
