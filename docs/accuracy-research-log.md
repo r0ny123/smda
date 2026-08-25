@@ -2420,3 +2420,62 @@ removing real functions, on any corpus. The precision headroom in the gap scan i
 6,093, 19,965 and 3,722 spurious candidates on the three — but it is not reachable from where the
 candidate sits. Anything that reaches it has to use what the address is *used as*, which is the same
 conclusion the landing-pad work reached by a different route.
+
+---
+
+## 2026-08-25 — the malware-corpus loss is one condition, and it is not the one it looked like
+
+`5f70672` changes seven files. Two hypotheses about which part costs the malware corpus were wrong
+before the third was right, and both were refuted by measurement rather than by reading.
+
+**Attribution first.** Diffing the recovered address sets either side of the commit, per sample, with
+the booking pass recorded for every address:
+
+- gained **10 true positives** (all `addReferenceCandidate`) and **76 false positives**
+  (`addGapCandidate` 54, `addReferenceCandidate` 22)
+- lost 3 true positives and 1 false positive, all `addGapCandidate`
+- net **+7 TP / +75 FP**, and **only 8 of 57 samples changed at all**
+
+Two samples carry 73 of the 76: `geodo` gains 40 false positives and **zero** true ones, `feodo` gains
+33 false positives and 4 true ones. On `feodo` every one of the 37 gained addresses falls inside a
+single pre-existing function, in a 0x340-byte window.
+
+**Wrong hypothesis 1: the new register-base jump-table recovery.** Logging every resolution that
+returns targets, on `feodo`, either side of the commit: *five* resolutions on both sides, the same
+five dispatch sites, the same target counts, the same address ranges. Identical. The jump-table half
+of the commit does nothing on this sample.
+
+**Wrong hypothesis 2: the widened backward-walk allowlist.** The diff moves
+`_VALUE_PRESERVING_MNEMONICS` out of `IndirectCallAnalyzer` into `definitions.py` — with identical
+membership. A pure move.
+
+**The actual cause** is one condition added to the inferred alignment floor in
+`common/FunctionCandidateManager.py`:
+
+```python
+and not candidate.is_exception_handler
+and not candidate.call_ref_sources          # added by 5f70672
+```
+
+Every call-referenced candidate now skips the floor. The commit argues it well — the floor is
+inferred from call-referenced candidates and tolerates a twentieth of them sitting off it, so
+applying it back to that same population discards what the inference allowed for. The prologue-scan
+half of the commit cannot be involved here at all: it keys on `push r15; push r14`, and these are
+32-bit dumps.
+
+Reverting that single line on top of `5f70672`, everything else in the commit left in place:
+
+| tree | PPV | TPR | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| `9ab1329`, before the commit | 93.180 | 98.523 | 95.443 | 21,681 | 2,508 | 243 |
+| `5f70672`, the commit | 92.639 | 98.561 | 95.142 | 21,688 | **2,583** | 236 |
+| `5f70672` minus that one condition | 93.180 | 98.515 | 95.439 | 21,679 | **2,508** | 245 |
+
+**The false-positive count returns to 2,508 — the pre-commit figure to the unit.** One condition owns
+all 75. It buys 9 true positives on this corpus and costs 75 false positives, a 1 : 8.3 trade; the
+rest of the commit is −2 true positives and no false positives here.
+
+No proposal yet, and deliberately so. The exemption was justified on 50 labelled ELF binaries and the
+question is what it is worth *there* — a condition that is right on ELF and wrong on PE dumps wants a
+narrower predicate, not a revert. The ByteWeight PE sets and the 260-cell C/C++ matrix are running
+either side of the same single line.
