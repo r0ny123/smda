@@ -90,6 +90,29 @@ class SmdaConfig:
     # images carrying an LSDA. It also pays for itself: on the two cells with the most pads,
     # analysis is 3.8% faster, because the candidates it refuses are ones nothing then analyses.
     USE_LSDA_LANDING_PADS = True
+    # Refuse a gap candidate strictly inside a range the image's own .eh_frame declares, and
+    # resume at that range's end. Broader than USE_LSDA_LANDING_PADS, which refuses only the
+    # subset an LSDA names: this catches the jump-table case labels a switch emits under
+    # -fcf-protection, which carry an endbr64 each and are the single largest precision
+    # mechanism measured on this corpus.
+    # Two conditions make it safe, and both were found by measuring what it cost without them.
+    # A PLT is exempt: the whole table sits under one FDE, so the range test would read every
+    # stub after the first as interior, which costs 3,457 real functions. And the range's own
+    # start must be a recovered function, because an FDE can begin in the alignment padding
+    # ahead of its function - the remaining 35 losses were all of that shape, two per statically
+    # linked cell, one of them rt_sigreturn under a signal-frame CIE.
+    # Measured against compiler symbol tables, macro means:
+    #   260 built C/C++ cells    PPV 94.109 -> 94.725 at TPR 95.595 -> 95.596 (+4 recovered)
+    #   72 AArch64 ELF cells     PPV 79.172 -> 80.554 at TPR 95.963 -> 95.964 (+3 recovered)
+    #   24 Rust cells            PPV 82.435 -> 83.608 at TPR 97.578 -> 97.617 (+6 recovered)
+    #   4 .NET cells             PPV 93.589 -> 95.332 at TPR 99.461 -> 99.469 (+2 recovered)
+    # 4,088 false positives removed, 15 real functions gained, no corpus loses recall, Go and
+    # ARM64 Mach-O bit-identical, and analysis time is inside an off-vs-off control band.
+    # Off by default only because it moves two bundled fixtures - four endbr64 case labels
+    # inside a function symbol-named `dispatch`, and two mid-function AArch64 instructions,
+    # none of them carrying a symbol. That is a deliberate baseline update rather than a config
+    # edit, which is the same reason the two options above ship off.
+    USE_ELF_FDE_INTERIOR_GAPS = False
     RESOLVE_REGISTER_CALLS = True
     # resolve "call/jmp dword ptr [<reg> + <disp>]" against a runtime-built import table and
     # record the API plus the slot it lives in; annotation only, it books no code refs

@@ -3304,3 +3304,78 @@ This is the same lesson as the ttype-offset guard earlier in this entry, arrivin
 direction. There the reader failed to reject bytes it could not read; here it read bytes it should
 never have trusted. A decoder that only checks whether the bytes *parse* will accept anything that
 happens to; what stops it is a property the format promises about what it decodes to.
+
+## 2026-08-25 — the FDE-interior gap rule, and the two conditions found by measuring what it cost
+
+Section 20 of the report left this open: the interior test the seeding scan uses was refused for
+the gap scan because it "costs every CET .plt stub". Attacking the NativeAOT precision item put it
+back on the table, because attributing that image's false positives by the pass that books each
+says where they come from:
+
+| bench_nativeaot, 1,376 genuine false positives, by first booking pass | |
+|---|---|
+| `addGapCandidate` | 763 |
+| `addReferenceCandidate` | 510 |
+| never booked by a tracked pass | 76 |
+| `addPrologueCandidate` | 27 |
+
+### The measurement that was wrong, and why
+
+The first pass at it counted, post hoc, which gap-booked addresses are FDE-interior: **1,106 false
+positives against 4 real losses**, none of them in a PLT. That is not what the rule does. Built and
+run end to end the same rule costs **3,457 true positives** on the same corpus — three orders of
+magnitude worse — because refusing a candidate changes what the scan reaches next, so the set the
+rule removes is not the set a subtraction predicts. The recorded refusal in section 20 was right and
+the fresh number was measuring a different question.
+
+That is the second time in this branch that a set difference and an end-to-end run disagreed in the
+same direction; the first was the landing-pad resume point, where stepping one instruction on cost 5
+true positives while resuming at the FDE end gained 15.
+
+### Condition one: a PLT is exempt
+
+Every loss was a PLT stub, as section 20 said. The whole table sits under a single FDE, so the range
+test reads every stub after the first as interior to the first. The section table declares where the
+table is, so the exemption is image-declared rather than heuristic. It takes the cost from **3,457
+true positives to 35**, and removes 1,869 false positives on that corpus regardless.
+
+### Condition two: the range's own start must be a recovered function
+
+The remaining 35 were perfectly systematic — every one on an `O2-static` cell, exactly two per cell:
+
+| lost address | opens with | its FDE | offset into it | CIE augmentation |
+|---|---|---|---|---|
+| `0x47ad70` | `mov rax, 0xf; syscall` | `0x47ad6f`+10 | 1 | `zRS` — a signal frame |
+| `0x477740` | `endbr64; mov rax, [rax+8]` | `0x477739`+25 | 7 | `zR` |
+
+Neither FDE start is a symbol or a truth start: both ranges begin in the alignment padding ahead of
+their function, and the real 16-byte-aligned entry sits a few bytes in. A range like that never had
+a claim to be one function starting where it says, so it is not evidence about anything inside it.
+Requiring the range's own start to be a function the analysis already recovered discharges both
+shapes without naming either.
+
+### Result, six corpora
+
+| corpus | n | PPV | TPR | dTP | dFP |
+|---|---|---|---|---|---|
+| Built C/C++ (gcc, clang, mingw) | 260 | 94.109 -> **94.725** | 95.595 -> **95.596** | +4 | -1,551 |
+| Built C/C++ AArch64 (gcc cross) | 72 | 79.172 -> **80.554** | 95.963 -> **95.964** | +3 | -1,692 |
+| Built Rust (gnu targets) | 24 | 82.435 -> **83.608** | 97.578 -> **97.617** | +6 | -197 |
+| Built .NET (CIL and NativeAOT) | 4 | 93.589 -> **95.332** | 99.461 -> **99.469** | +2 | -648 |
+| Built Go, ARM64 Mach-O | 56 | bit-identical | | 0 | 0 |
+
+**4,088 false positives removed, 15 real functions gained, no corpus loses recall.**
+`summarize.py --compare` reports `compared=6` and `[ok] no TPR regression on any compared config`.
+Timing sits inside an off-vs-off control band on the two heaviest cells.
+
+### Why it ships off anyway
+
+It moves two bundled fixtures, and both moves are improvements: `elf_cet_landing_pads_x64_xored`
+drops four `endbr64` addresses that are jump-table case labels strictly inside the function the
+symbol table names `dispatch`, and `aarch64_static_xored` drops two mid-function instructions. None
+of the six carries a symbol. That is exactly the switch-under-`-fcf-protection` class section 13
+ranks as the largest single precision mechanism on this corpus.
+
+Moving a frozen fixture is a deliberate baseline update rather than a config edit, which is the
+stated reason the two options beside it ship off as well. The measurement supports enabling it; the
+decision is a maintainer's, and everything needed to make it is recorded here.

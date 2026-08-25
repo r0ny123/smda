@@ -62,11 +62,13 @@ class FunctionCandidateManager:
         self._eh_frame_fde_ranges = None
         self._eh_frame_fde_starts = []
         self._declared_landing_pads = None
+        self._plt_ranges = None
 
     def init(self, disassembly, cbAnalysisTimeout=None):
         self._eh_frame_fde_ranges = None
         self._eh_frame_fde_starts = []
         self._declared_landing_pads = None
+        self._plt_ranges = None
         if disassembly.binary_info.code_areas:
             self._code_areas = disassembly.binary_info.code_areas
         self.disassembly = disassembly
@@ -585,6 +587,31 @@ class FunctionCandidateManager:
 
     def isDeclaredLandingPad(self, addr):
         return addr in self.declaredLandingPads()
+
+    #: sections an ELF names as a procedure linkage table, in the order a linker emits them
+    PLT_SECTION_NAMES = (".plt", ".plt.sec", ".plt.got", ".iplt")
+
+    def declaredPltRanges(self):
+        """(start, end) for every section the image names as a procedure linkage table.
+
+        The whole table sits under a single FDE, so any test that reads an unwind range as one
+        function treats every stub after the first as interior to it. The section table is what
+        says otherwise. An image reduced to its segments names no sections, so this is empty
+        there and anything built on it is inert rather than wrong.
+        """
+        if getattr(self, "_plt_ranges", None) is not None:
+            return self._plt_ranges
+        ranges = []
+        lief_binary = self.disassembly.binary_info.getLiefBinary()
+        if isinstance(lief_binary, lief.ELF.Binary):
+            for section in lief_binary.sections:
+                if section.name in self.PLT_SECTION_NAMES and section.virtual_address and section.size:
+                    ranges.append((section.virtual_address, section.virtual_address + section.size))
+        self._plt_ranges = ranges
+        return ranges
+
+    def isInDeclaredPltSection(self, addr):
+        return any(start <= addr < end for start, end in self.declaredPltRanges())
 
     def declaredLandingPadSkipTarget(self, addr):
         """Where a gap scan should resume after refusing the declared landing pad at `addr`.

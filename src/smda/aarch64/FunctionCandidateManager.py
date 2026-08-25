@@ -905,6 +905,17 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 skip = self.declaredLandingPadSkipTarget(self.gap_pointer)
                 self.gap_pointer = skip or self.gap_pointer + INSTRUCTION_SIZE
                 continue
+            if self.config.USE_ELF_FDE_INTERIOR_GAPS and not self.isInDeclaredPltSection(self.gap_pointer):
+                # A PLT is exempt: the whole table sits under one FDE, so the range test reads
+                # every stub after the first as interior to the first, and on a CET image the
+                # gap scan is what recovers them.
+                containing = self.declaredFdeRangeContaining(self.gap_pointer)
+                # Only a range whose own start the analysis recovered is evidence that the
+                # range is one function: an FDE can begin in the alignment padding ahead of
+                # its function, and then the real entry a few bytes in is interior to nothing.
+                if containing is not None and containing[0] in self.disassembly.functions:
+                    self.gap_pointer = containing[1]
+                    continue
             if is_bti_landing_pad(word) and self._isLikelyInteriorBtiCandidate(self.gap_pointer):
                 self.gap_pointer += INSTRUCTION_SIZE
                 continue
