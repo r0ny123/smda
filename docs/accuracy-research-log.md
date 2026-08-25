@@ -2276,3 +2276,46 @@ why "any padding at all" is not one either.
 Recorded as a characterisation rather than a proposal. What it changes is the shape of the remaining
 agenda: the gap scan is not uniformly imprecise, it is two populations, and the next thing worth
 knowing is whether the same split holds on a corpus that is not mingw Rust.
+
+---
+
+## 2026-08-25 — the split holds on three corpora, and weakens with each one
+
+The alignment-and-padding pair, measured the same way on three corpora. 260 C/C++ x86 cells and 72
+AArch64 cells joined the 24 Rust ones; no cell was skipped in any of the three.
+
+| corpus | n | aligned + padded | aligned, no padding | unaligned + padded | unaligned, no padding | gap-scan precision overall |
+|---|---|---|---|---|---|---|
+| Rust (gnu targets, x86) | 24 | **97.4%** (2,995 / 79) | 27.9% | 16.6% | **4.0%** (208 / 4,998) | 36.2% |
+| C/C++ x86 (gcc, clang, mingw) | 260 | **89.6%** (13,889 / 1,620) | 51.6% | 16.4% | **14.2%** (2,278 / 13,747) | 46.9% |
+| C/C++ AArch64 (gcc cross) | 72 | **65.2%** (980 / 524) | 36.5% | 3.1% | **29.0%** (952 / 2,335) | 39.3% |
+
+**The direction is the same on all three and the strength is not.** Aligned-and-padded against
+unaligned-and-unpadded is a 24-fold precision difference on Rust, 6.3-fold on x86 C/C++ and 2.2-fold
+on AArch64. What a filter would buy follows the same collapse:
+
+| corpus | spurious removed | real lost | ratio |
+|---|---|---|---|
+| Rust | 4,998 | 208 | 24 : 1 |
+| C/C++ x86 | 13,747 | 2,278 | 6 : 1 |
+| C/C++ AArch64 | 2,335 | 952 | 2.5 : 1 |
+
+On AArch64 it is barely a filter at all, and the reason is structural rather than statistical: every
+AArch64 instruction is 4-byte aligned, so "not 16-byte aligned" says far less there than it does
+about a variable-length x86 encoding. A rule built on the Rust number and applied tree-wide would be
+close to a coin toss on the corpus with the worst precision of the eleven.
+
+**This is why the two-corpus rule exists.** The single-corpus version of this measurement pointed at
+a 24-fold effect and would have justified shipping something; the third corpus prices it at 2.2.
+
+### One correction to the earlier AArch64 run
+
+The first AArch64 pass reported zero padding in front of every one of its 6,133 candidates, which is
+not a finding — the padding set was `cc`/`90`/`00`, and AArch64 pads with the four-byte NOP
+`1f 20 03 d5`. The corrected run added a control printing what actually precedes a candidate, and it
+reads `1f2003d5` 1,536 times and `c0035fd6` — `ret` — 1,063 times. Every measurement here now carries
+that control.
+
+That control also named the next question. A thousand AArch64 candidates sit directly behind a `ret`
+with no padding at all, and the padding-only feature files every one of them under "nothing in
+front" together with the genuine noise.
