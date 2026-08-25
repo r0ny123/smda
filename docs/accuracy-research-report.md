@@ -533,14 +533,21 @@ they contribute:
 
 | configuration | false positives | of which `endbr64`-headed | true positives |
 |---|---|---|---|
-| this branch with both options off | 1,210 | **822** | 5,695 |
-| as shipped, `USE_LSDA_LANDING_PADS` on | 119 | **0** | 5,717 |
-| plus `USE_ELF_FDE_INTERIOR_GAPS` | 80 | **0** | 5,718 |
+| this branch with both rules turned off | 1,210 | **822** | 5,695 |
+| `USE_LSDA_LANDING_PADS` alone | 119 | **0** | 5,717 |
+| both, which is what ships | 80 | **0** | 5,718 |
 
 Not one `endbr64`-headed false positive survives either rule, and true positives rise rather than
 fall at each step. The worst cell in the table above, `googletest_gcc-x64_O2`, goes from 858 false
 positives to 63. What is left is 80 addresses that have nothing to do with this pattern, so the
 ceiling this item named is reached rather than approached.
+
+Both rules are on by default. Enabling the second one moved two bundled fixture baselines, and one
+of the six addresses is a cost rather than a correction: `0x40DF34` on `aarch64_static` is a Binary
+Ninja function start, and it is an alternate entry sharing one frame with the routine its FDE names
+— the unwinder and Binary Ninja disagree about whether that counts as a function, and the rule
+follows the unwinder. It is asserted absent in the fixture test rather than dropped from the
+expected list, so the disagreement stays visible.
 
 The obvious repair — seed an `endbr64` only where the bytes before it end a function or pad between
 functions — was measured and **rejected**; section 6 records all five variants tried and what each

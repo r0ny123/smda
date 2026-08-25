@@ -3368,17 +3368,34 @@ shapes without naming either.
 `summarize.py --compare` reports `compared=6` and `[ok] no TPR regression on any compared config`.
 Timing sits inside an off-vs-off control band on the two heaviest cells.
 
-### Why it ships off anyway
+### Enabled, and the two fixture baselines moved with it
 
 It moves two bundled fixtures, and both moves are improvements: `elf_cet_landing_pads_x64_xored`
 drops four `endbr64` addresses that are jump-table case labels strictly inside the function the
 symbol table names `dispatch`, and `aarch64_static_xored` drops two mid-function instructions. None
-of the six carries a symbol. That is exactly the switch-under-`-fcf-protection` class section 13
-ranks as the largest single precision mechanism on this corpus.
+of the six carries a symbol or is a declared start. That is exactly the switch-under-
+`-fcf-protection` class section 13 ranks as the largest single precision mechanism on this corpus.
 
-Moving a frozen fixture is a deliberate baseline update rather than a config edit, which is the
-stated reason the two options beside it ship off as well. The measurement supports enabling it; the
-decision is a maintainer's, and everything needed to make it is recorded here.
+Moving a frozen fixture is a deliberate baseline update rather than a config edit, so it was held
+for an explicit decision and shipped off in the meantime. That decision has since been taken and
+the rule is on by default.
+
+**One of the six is a cost, not a correction, and the fixture tests are what showed it.** The
+AArch64 fixture is stripped, so "carries no symbol" was weak evidence; the repository already holds
+Binary Ninja boundaries for it, and `0x40DF34` is one of them. It sits inside the FDE at `0x40DDC0`,
+and that FDE really is one unwind range: `0x40DF34` repeats the range's opening minus its `prfm`
+prefetch, which is an alternate entry sharing one frame rather than a routine of its own — the
+`memcpy`-variant shape. The unwinder and Binary Ninja disagree about whether that counts as a
+function and the rule follows the unwinder.
+
+It is asserted as absent rather than deleted from the expected-starts list, so the disagreement
+stays visible instead of dissolving into a smaller number. The other AArch64 address, `0x400444`,
+is an ordinary interior: it opens `mov x2, #0x400` / `add x0, sp, #0x110` against a frame the FDE
+start established 948 bytes earlier.
+
+The wider measurement is unaffected — the AArch64 corpus scores against compiler symbol tables and
+gains 3 true positives there. This is one address where a second oracle disagrees, which is worth
+recording precisely because the six-corpus number cannot see it.
 
 ## 2026-08-25 — headerless bitness: the approach the agenda named, measured and rejected
 

@@ -108,11 +108,11 @@ class SmdaConfig:
     #   4 .NET cells             PPV 93.589 -> 95.332 at TPR 99.461 -> 99.469 (+2 recovered)
     # 4,088 false positives removed, 15 real functions gained, no corpus loses recall, Go and
     # ARM64 Mach-O bit-identical, and analysis time is inside an off-vs-off control band.
-    # Off by default only because it moves two bundled fixtures - four endbr64 case labels
-    # inside a function symbol-named `dispatch`, and two mid-function AArch64 instructions,
-    # none of them carrying a symbol. That is a deliberate baseline update rather than a config
-    # edit, which is the same reason the two options above ship off.
-    USE_ELF_FDE_INTERIOR_GAPS = False
+    # Enabling it moved two bundled fixtures, deliberately: elf_cet_landing_pads_x64 drops four
+    # endbr64 addresses that are jump-table case labels strictly inside the function the symbol
+    # table names `dispatch`, and aarch64_static drops two mid-function instructions. None of
+    # the six carries a symbol or is a declared start, so both baselines moved toward the truth.
+    USE_ELF_FDE_INTERIOR_GAPS = True
     RESOLVE_REGISTER_CALLS = True
     # resolve "call/jmp dword ptr [<reg> + <disp>]" against a runtime-built import table and
     # record the API plus the slot it lives in; annotation only, it books no code refs

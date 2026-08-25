@@ -53,10 +53,10 @@ class FdeInteriorGapRuleTest(unittest.TestCase):
             os.unlink(temp_path)
         return {function.offset for function in report.getFunctions()}
 
-    def testTheRuleIsOffByDefault(self):
-        # it moves two bundled fixtures, so enabling it is a baseline update rather than a
-        # config edit; the assertions below drive it explicitly for that reason
-        self.assertFalse(SmdaConfig().USE_ELF_FDE_INTERIOR_GAPS)
+    def testTheRuleIsOnByDefault(self):
+        # enabling it moved two bundled fixture baselines deliberately; the assertions below
+        # drive it explicitly either way so they say what it does rather than what is shipped
+        self.assertTrue(SmdaConfig().USE_ELF_FDE_INTERIOR_GAPS)
 
     def testTheSwitchCaseLabelsInsideOneFunctionAreRefused(self):
         off, on = self.recoveredWith(False), self.recoveredWith(True)

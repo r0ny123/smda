@@ -95,6 +95,10 @@ class _LandingPadFixtureCase:
         config.CALCULATE_NESTING = False
         config.CALCULATE_HASHING = False
         config.USE_LSDA_LANDING_PADS = use_landing_pads
+        # the interior-range rule refuses a superset of what an LSDA names, so leaving it on
+        # would refuse these pads with the rule under test switched off and the comparison
+        # below would show nothing either way
+        config.USE_ELF_FDE_INTERIOR_GAPS = False
         # analysed through a file rather than a buffer so the ELF header picks the architecture.
         # The handle is closed before the path is handed on: Windows refuses a second open on a
         # file another handle still holds, and the loader reports that as an empty result rather
