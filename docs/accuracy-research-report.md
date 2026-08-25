@@ -1035,17 +1035,59 @@ harness and its own `body_splits` metric:
 It buys 12 real functions there. It is a predicate that is right on ELF executables and wrong on
 memory dumps — which wants a narrower predicate, not a revert.
 
-### The narrower predicate the tree already names
+### A narrower predicate, chosen from what the exemption actually admits
 
-`FunctionCandidate.getConfidence` scores a candidate with more than one inbound call reference at 1.0
-outright, on the stated grounds that *multiple* references are essentially always a function. Applying
-that same threshold before the alignment floor is waived keeps **10 of the 12** ELF functions and
-removes **43 of the 75** false positives on the malware corpus — better than what ships, on both
-corpora simultaneously.
+Profiling the admitted candidates rather than the net effect is what picks the rule, and the first
+version of that profile was wrong in a way worth recording. Scoring an ELF address as an error when
+it is absent from the truth set made the exemption look 45% precise there, with the *spurious* side
+carrying more call references and higher confidence than the real side — the signature of PLT stubs,
+which this corpus labels not at all and whose own metric declines to penalise. Reclassified the way
+that corpus classifies an address:
 
-It is still not free: malpedia recall 98.561 → 98.548, ELF recall 95.098 → 95.081. Under the
-no-recall-drop rule it would not land here as it stands, which is why it is recorded rather than
-proposed.
+| 100 exempted and recovered, 50 ELF binaries | labelled start | body split | unlabelled |
+|---|---|---|---|
+| count | 45 | **0** | 55 |
+
+**Zero body splits** — the exemption produces no errors at all where it was justified. On the malware
+corpus, where the truth includes thunks so absence is a genuine error:
+
+| 94 exempted and recovered, 57 dumps | real (71) | spurious (23) |
+|---|---|---|
+| has a common entry shape | 66 (93.0%) | 5 (21.7%) |
+| exactly one call reference | 49 (69.0%) | **23 (100.0%)** |
+| **neither of the two** | **3 (4.2%)** | **18 (78.3%)** |
+
+So waive the floor only for a candidate that is call-referenced **and** either entry-shaped or
+referenced more than once:
+
+| 50 ELF binaries | recall | recovered | body splits |
+|---|---|---|---|
+| exemption as shipped | 95.098% | 10,826 | 306 |
+| **entry shape or more than one reference** | **95.098%** | **10,826** | **306** |
+| more than one reference only | 95.081% | 10,824 | 308 |
+| no exemption | 94.993% | 10,814 | 308 |
+
+| 57 malware dumps | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|
+| exemption as shipped | 92.639 | 98.561 | 95.142 | 21,688 | 2,583 |
+| **entry shape or more than one reference** | 92.911 | 98.551 | **95.306** | 21,686 | **2,552** |
+| more than one reference only | 93.038 | 98.548 | 95.373 | 21,685 | 2,540 |
+| no exemption | 93.180 | 98.515 | 95.439 | 21,679 | 2,508 |
+
+**It is byte-identical to what ships on the ELF corpus** — same recall, same recovered count, same
+body splits — while removing 31 of the 75 false positives on the malware corpus. Against recovered
+sets rather than aggregates it is a strict subset: 31 false positives dropped, 2 true positives
+dropped, **0 addresses gained**.
+
+The `getConfidence` threshold alone — more than one inbound reference, which that model already
+scores at 1.0 outright — removes more false positives (43) and is *not* free on ELF: it costs 2
+functions and adds 2 body splits. It is the worse of the two.
+
+Neither clears a no-recall-drop gate, which is why both are recorded rather than proposed. The two
+functions the better one costs are `0xb8c08e` on `feodo` and `0x1e05ae9` on `urlzone`, each a real
+function whose entire evidence is a single call reference with no recognised entry shape — the same
+bucket holding 18 of the 23 spurious admissions. Separating two from eighteen is not a rule, so no
+third clause is offered.
 
 ### Full ledger, both sides at `5f70672`
 
