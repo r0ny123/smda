@@ -1984,6 +1984,13 @@ The repaired benchmark reported the branch inconclusive three times running, but
 drifting: **+0.82%**, **−0.84%**, **−2.31%**. The band absorbed all three, and a band absorbing
 something is not the same as nothing being there, so the last one was measured directly instead.
 
+The drift turned out not to be the signal, and the run after it says so. `0b5ca6c` changes only
+`tools/` and `docs/` — its `src/` tree is byte-identical to `68ce20c`'s — and the same workflow scored
+the two at **−2.31% (p = 0.0000)** and **+0.06% (p = 0.9865)**. That is an accidental identical-source
+control on CI's own instrument, and it puts the repaired workflow's between-run spread at about 2.4
+points even with both sides on one runner. So the drift was a reason to go and measure, not evidence
+of anything; what follows stands on the local instrument and its own control, not on CI's trend.
+
 Same machine, both commits checked out into one directory in turn, leading side rotated per pass,
 min of three, on the malware dumps — the corpus CI measures, and one the rule fires on **not at all**
 (function count 24,270 either way):
