@@ -2978,3 +2978,22 @@ prologue candidate at a declared landing pad:
 It is the same shape as the `.eh_frame` FDE-range rule already landed, one level more precise: that
 one asks "is this address inside a declared function", this one asks "is this address a place the
 unwinder is declared to jump to".
+
+### Which pass books them, and why the rule already landed does not catch them
+
+Before building anything, the obvious objection: this branch **already** refuses an `endbr64` prologue
+seed that opens inside a declared FDE range, and a landing pad is inside one by definition. So why are
+4,757 of them still in the report?
+
+| the 4,757 declared-landing-pad false positives, by the pass that first books each | |
+|---|---|
+| `addGapCandidate` | **4,757 (100.0%)** |
+
+**Every one comes from the gap scan.** The landed rule guards the seeding scan, and the gap scan books
+these independently, afterwards, from bytes nothing else claimed. The two passes disagree about the
+same addresses and only one of them was taught the FDE ranges.
+
+That places the fix precisely: not a wider prologue rule, but a gap-scan rule — the gap scan must not
+promote an address the image declares as a landing pad. It also explains the earlier finding that
+these detections sit in functions with no indirect jump: the gap scan is not following a dispatch, it
+is filling a hole, and a landing pad is a hole because nothing in the function branches to it.
