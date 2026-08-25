@@ -1117,3 +1117,36 @@ body splits down from 712 to 316, no file regressed — and the corpus it was me
 contain the workload that pays for it. The general form is already recorded here from the opposite
 direction, where a guard measured *free* on an available corpus cost real functions on the one that
 exercised the path. Same instrument error, opposite sign, and neither is visible without running both.
+
+### Why the residue is not reachable, which is the more useful result
+
+The predicate above leaves a bucket it cannot judge: a candidate with one call reference and no
+entry shape. Asking where that one reference comes from separates it completely — on the malware
+corpus **all 18** spurious admissions are referenced from an instruction that is not real code,
+against **0 of 18**, while every one of the 5 on the ELF corpus is.
+
+Repeated over every recovered candidate carrying exactly one call reference rather than only the
+ones this exemption admits — 8,836 on the dumps — it holds at scale:
+
+| malpedia, one call reference | count | precision |
+|---|---|---|
+| the reference comes from real code | 8,120 | **98.9%** |
+| it does not | 716 | **6.1%** |
+
+A sixteen-fold separation. It does not separate on the 50 ELF binaries, and that is the point rather
+than a disappointment: only 60 of 2,197 land in the weak bucket at all, because on a compiler-built
+binary nearly every call site is a real instruction. The signal exists where misdecoded regions do,
+which explains the entire corpus split without appealing to the corpus.
+
+**And the engine cannot see it.** That test answered "is the referencing instruction real code" from
+ground truth. The nearest question the engine can ask is "did I decode an instruction there", and
+measured side by side the proxy collapses the separation from sixteen-fold to 2.3-fold — because 82%
+of the spurious references point at an instruction SMDA decoded. The decoding is the thing that is
+wrong, so asking it to check its own work catches almost nothing. As a filter the proxy trades 88
+real functions for 135 spurious ones against the ground-truth version's 15 to 1.
+
+So this class of false positive is not reachable from inside the disassembly. Anything that reaches
+it has to bring evidence the *image* declares — an entry, an unwind record, a symbol, a relocation —
+rather than evidence the engine derived. Section 20's landing-pad rule and the gap-scan position
+family in the log both arrived at that conclusion by different routes; this is the first time it
+comes with a measured mechanism rather than an inference.
