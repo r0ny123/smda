@@ -2544,3 +2544,67 @@ The two corpora that pay are both 64-bit-capable dumped sets, but "dumped" is no
 the 32-bit dumped ByteWeight set *gains* 0.013, and the sample that gains the most false positives on
 malpedia is a 32-bit dump. What separates them is not yet established, and finding it is what would
 turn the narrowed predicate into a free one.
+
+---
+
+## 2026-08-25 — a predicate that costs nothing where the change was justified
+
+Profiling every candidate the exemption admits — not the net effect, the candidates themselves —
+across both corpora, classified the way each corpus classifies an address.
+
+**The first version of this probe was wrong and the ELF column is what showed it.** Counting "not in
+the truth set" as an error there made the exemption look 45% precise, with the *spurious* side
+carrying more call references (median 7) and higher confidence (1.0) than the real side. That is the
+signature of PLT stubs: the corpus labels `.symtab` FUNC symbols only, and its own metric says
+unlabelled code is "neither credited nor penalised, since unlabelled code is real code". Scoring it
+as a false positive turns every import stub into an error.
+
+Re-run with that corpus' three-way classification — a labelled start, a **body split** (strictly
+inside a labelled function, its unambiguous error), or unlabelled:
+
+| 100 exempted and recovered, 50 ELF binaries | labelled start | body split | unlabelled |
+|---|---|---|---|
+| count | 45 | **0** | 55 |
+| has a common entry shape | 39 (86.7%) | – | 55 (100%) |
+
+**Zero body splits.** The exemption produces no errors at all on the corpus it was written for.
+
+On the malware corpus, where the truth does include thunks so "not in truth" is a real error:
+
+| 94 exempted and recovered, 57 dumps | real (71) | spurious (23) |
+|---|---|---|
+| has a common entry shape | 66 (93.0%) | 5 (21.7%) |
+| exactly one call reference | 49 (69.0%) | 23 (100.0%) |
+| **neither of the two** | **3 (4.2%)** | **18 (78.3%)** |
+
+Every spurious one has exactly one call reference, and 78% have no entry shape either. So waive the
+floor only for a candidate that is call-referenced **and** either entry-shaped or referenced more
+than once.
+
+### Measured end to end, four variants, both corpora
+
+| 50 ELF binaries | recall | recovered | body splits |
+|---|---|---|---|
+| exemption as shipped | 95.098% | 10,826 | 306 |
+| **entry shape or more than one reference** | **95.098%** | **10,826** | **306** |
+| more than one reference only | 95.081% | 10,824 | 308 |
+| no exemption | 94.993% | 10,814 | 308 |
+
+| 57 malware dumps | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|
+| exemption as shipped | 92.639 | 98.561 | 95.142 | 21,688 | 2,583 |
+| **entry shape or more than one reference** | 92.911 | 98.551 | **95.306** | 21,686 | **2,552** |
+| more than one reference only | 93.038 | 98.548 | 95.373 | 21,685 | 2,540 |
+| no exemption | 93.180 | 98.515 | 95.439 | 21,679 | 2,508 |
+
+**It is byte-identical to the shipped exemption on the ELF corpus** — same recall, same recovered
+count, same body splits — while removing **31 of the 75** false positives the exemption costs on the
+malware corpus, for **2** true positives. The narrower `>1 reference` variant removes more (43) but is
+no longer free on ELF: it costs 2 functions and adds 2 body splits.
+
+That is the honest ranking. Neither is free on the malware corpus, so neither clears a
+no-recall-drop gate; but one of them is free where the change was justified, which the other is not,
+and that is a better answer than the revert this started from.
+
+Not landed: this is `master`'s code and the finding is reported rather than pushed. What the two lost
+true positives are is the next thing to look at, and would decide whether a third clause closes it.
