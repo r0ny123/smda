@@ -2735,3 +2735,41 @@ not available during analysis; the runtime proxy would be something like "the re
 inside a function already recovered on stronger evidence", and whether that proxy separates the same
 way has to be measured rather than assumed — it reads the recovered set, which is the circularity
 that already caught this investigation once.
+
+### The same question on the whole population
+
+26 candidates is a direction, so the same test over **every** recovered candidate carrying exactly
+one call reference — 8,836 on the dumps, 2,197 on the ELF binaries:
+
+| malpedia, 57 dumps | count | precision |
+|---|---|---|
+| the reference comes from real code | 8,120 | **98.9%** |
+| it does not | 716 | **6.1%** |
+
+**A sixteen-fold separation over 8,836 candidates.** 672 of the 759 spurious singly-referenced
+candidates on this corpus are admitted on a reference that is not a real instruction. The mechanism
+holds far beyond the 26 it was found in.
+
+| boundary corpus, 50 ELF | count | precision |
+|---|---|---|
+| the reference comes from real code | 2,137 | 95.8% |
+| it does not | 60 | 83.3% |
+
+**And it does not separate on ELF**, which is the point rather than a disappointment: only 60 of
+2,197 land in the weak bucket at all, because on a compiler-built binary nearly every call site is a
+real instruction. The signal exists where misdecoded regions do.
+
+Two limits, both load-bearing:
+
+- **The ELF "spurious" column is contaminated** in the way already recorded here — that corpus labels
+  `.symtab` FUNC symbols only, so a PLT stub counts as spurious. 90 of its 100 are referenced from
+  real code, which is what an unlabelled real function looks like. Read the ELF row as "no usable
+  separation", not as a precision figure.
+- **This is a diagnostic, not a rule.** "The referencing instruction is real code" was answered from
+  ground truth. During analysis the engine cannot ask that, and the obvious proxy — "the reference
+  comes from inside an already-recovered function" — reads the recovered set, which is the
+  circularity that has already misled this investigation once. Whether the proxy separates the same
+  way is the next measurement, and it has to be made before any of this becomes a change.
+
+As a filter it would cost 44 real functions on the dumps to remove 672 spurious ones, a 15 : 1 trade
+— better than anything else measured on this corpus, and still not free.
