@@ -75,13 +75,21 @@ Set `SMDA_BENCH_GROUNDTRUTH` to the ground-truth root (default `~/groundtruth_da
 | `go` | Go across GOOS/GOARCH and link modes | `go tool nm` over the unstripped build |
 | `rust` | Rust across targets, profiles and LTO | symbol table of the unstripped link |
 | `dotnet` | CIL, ReadyToRun, single-file and NativeAOT | assembly metadata; symbols for the native image |
+| `native-arm64` | the same C/C++ programs and variants through the AArch64 cross compiler, plus a `-mbranch-protection=standard` cell | symbol table of the unstripped link |
 | `macho-arm64` | ARM64 Mach-O, from the repository's own fixture corpus | `LC_FUNCTION_STARTS`, written by the linker |
 
 The built families are produced by:
 
 ```
-tools/bench/build_corpus.py --family native,go,rust,dotnet,macho-arm64 --out "$SMDA_BENCH_GROUNDTRUTH/built"
+tools/bench/build_corpus.py --family native,native-arm64,go,rust,dotnet,macho-arm64 --out "$SMDA_BENCH_GROUNDTRUTH/built"
 ```
+
+`native-arm64` needs `gcc-aarch64-linux-gnu` and `g++-aarch64-linux-gnu`. It is kept as its own
+corpus rather than as extra cells of `native` so the x86 matrix stays comparable to the figures
+already published for it instead of becoming a mixed-architecture population. Its `O2-bti` cell is
+the only corpus here that carries AArch64 BTI landing pads in any density — 3,830 across its nine
+binaries against 21 in the same programs built without the flag, which is the control that the cell
+measures what it claims to.
 
 `macho-arm64` needs no toolchain and no download: it decodes the ARM64 Mach-O fixtures the
 repository already carries and reads each one's `LC_FUNCTION_STARTS`. It is the only AArch64

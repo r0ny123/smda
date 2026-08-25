@@ -258,6 +258,13 @@ CORPORA: Dict[str, Corpus] = {
         loader=_builtLoader("native"),
         relative_root=os.path.join(BUILT_ROOT, "native"),
     ),
+    "native-arm64": Corpus(
+        key="native-arm64",
+        title="Built C/C++ AArch64 (gcc cross)",
+        truth_source="symbol table of the unstripped link, measured on the stripped twin",
+        loader=_builtLoader("native-arm64"),
+        relative_root=os.path.join(BUILT_ROOT, "native-arm64"),
+    ),
     "go": Corpus(
         key="go",
         title="Built Go (pclntab truth)",

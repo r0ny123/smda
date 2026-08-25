@@ -23,7 +23,7 @@ if __package__ in (None, ""):
 #: the checkout this script lives in; the ARM64 Mach-O corpus is carried in it
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-FAMILIES = ["native", "go", "rust", "dotnet", "macho-arm64"]
+FAMILIES = ["native", "native-arm64", "go", "rust", "dotnet", "macho-arm64"]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -54,15 +54,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_dir = os.path.join(args.out, family)
         os.makedirs(out_dir, exist_ok=True)
         work_dir = os.path.join(args.work, family)
-        if family == "native":
+        if family in ("native", "native-arm64"):
             from bench.builders.native import build as buildNative
 
+            # native-arm64 is the same programs and variants through the AArch64 cross
+            # compiler, kept in its own corpus so the x86 matrix stays comparable to the
+            # figures already published for it rather than becoming a mixed population.
+            requested = [key.strip() for key in args.toolchains.split(",")] if args.toolchains else None
             manifest = buildNative(
                 out_dir,
                 args.cache,
                 work_dir,
                 programs=[key.strip() for key in args.programs.split(",")] if args.programs else None,
-                toolchains=[key.strip() for key in args.toolchains.split(",")] if args.toolchains else None,
+                toolchains=requested or (["gcc-arm64"] if family == "native-arm64" else None),
+                family=family,
             )
         elif family == "go":
             from bench.builders.go_family import build as buildGo

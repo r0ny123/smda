@@ -1910,3 +1910,68 @@ predicate would apply unchanged. It is not fixed here because nothing here can m
 cells carry **zero** FDE ranges, the ARM64 Mach-O corpus has no such section, and the one bundled
 AArch64 ELF that has 276 readable ranges has no ground truth. Scoring a change there by counting
 recovered addresses is the instrument this project has already recorded as wrong.
+
+---
+
+## 2026-08-25 — an AArch64 ELF corpus, and what it says about the architecture gap
+
+The landing-pad fix was recorded with its AArch64 sibling unmeasured, and the reason was that no
+corpus here could reach it: Go's arm64 cells carry zero FDE ranges, the ARM64 Mach-O corpus has no
+`.eh_frame` section, and the one bundled AArch64 ELF has no ground truth. That prerequisite is now
+met — `gcc-aarch64-linux-gnu` builds the same ten C and C++ programs, the same seven variants, into a
+`native-arm64` corpus whose truth is the same compiler's symbol table. 72 cells of 80; the eight
+failures are all `xxhash`, whose `XXHSUM_DISPATCH` is x86-specific, and the manifest says so.
+
+It is its own corpus rather than extra cells of `native`, so the x86 matrix stays comparable to the
+figures already published for it rather than silently becoming a mixed-architecture population.
+
+### The recall gap is not architectural
+
+Report §13 ranked AArch64 recall as "the largest architecture gap measured anywhere in this work",
+from micro recall 91.246 on eleven Mach-O binaries against 99.745 on the 64-bit ByteWeight set. Those
+are two different populations — real macOS images with linker truth against MSVC-built open-source
+PEs — and holding source, programs, variants and compiler family constant says something else:
+
+| 63 matched cells, same programs and variants | macro PPV | macro TPR |
+|---|---|---|
+| `gcc-x64` | 94.684 | 96.899 |
+| `gcc-arm64` | **77.594** | 95.364 |
+
+**Recall differs by 1.5 points; precision differs by 17.1.** Micro recall on the AArch64 corpus is
+97.750, higher than the x86 matrix's 94.958. Whatever the Mach-O corpus is measuring, it is not a
+recall property of the instruction set, and the agenda's first item is ranked on the wrong axis.
+
+### The BTI sibling, measured and rejected by the gate
+
+The `O2-bti` cell exists because nothing else here carries the construct: 3,830 BTI landing pads
+across its nine binaries against **21** in the same programs built without the flag.
+
+The sibling rule — extend the declared-range test to `is_bti_landing_pad`, which today is guarded
+only by a `code_map` check that cannot see a not-yet-decoded region — measures on those cells:
+**2,068 of 2,068** false-positive pads sit strictly inside a declared FDE range, and **0** true
+positives opening with a pad do. That is a cleaner split than the x86 case, where the same test
+touched 2,131 real functions, all of them PLT stubs.
+
+End to end across the whole corpus, n=72: **PPV 76.676 → 78.050**, F1 84.852 → 85.828, **2,861 false
+positives removed** — and **one true positive lost**, `0xe1744` on `sqlite3_gcc-arm64_O2-bti`. TPR
+95.9386 → 95.9379.
+
+`summarize.py --compare` rejects it, and correctly: a TPR drop on any corpus is the stated criterion
+and it does not have a size threshold. The change is reverted. What the loss is, for whoever revisits
+this: `0xe1744` opens `paciasp`, not a BTI pad, and sits in no declared range, so the rule refused
+nothing about it — it is the same second-order class as the seven the x86 rule costs, an address
+whose analysis descended from a pad that is now refused. Recovering it needs the pad-to-victim chain
+instrumented, not a narrower predicate.
+
+Recorded rather than landed, and worth a maintainer's call: 2,861 false positives against one
+function in 56,127 is a trade the gate as written will not take.
+
+### The measurement that was wrong first
+
+The first BTI run reported a clean **0 of 2,068** — the opposite answer — behind three controls that
+all looked right: 3,830 pads present, 2,068 recovered as false positives, 124 to 1,777 FDE ranges
+decoded per image. The script built its per-file record with two dictionary keys of the same name,
+so the false-positive column was silently overwritten by the true-positive one and every "inside"
+figure printed was the wrong quantity. Re-deriving the same number a second way, out of a different
+script, is what caught it. A zero with three healthy controls beside it is still only as good as the
+line that computed it.

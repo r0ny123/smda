@@ -14,8 +14,8 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 from bench.builders.sources import PROGRAMS, SourceProgram, fetch
 from bench.builders.truth import elfFunctionStarts, peFunctionStarts, writeTruth
@@ -31,6 +31,8 @@ class Toolchain:
     bitness: int
     #: flags every cell of this toolchain needs
     base_flags: List[str]
+    #: cells only this toolchain can build, appended to the shared variant list
+    extra_variants: List[Tuple[str, List[str]]] = field(default_factory=list)
 
 
 TOOLCHAINS: Dict[str, Toolchain] = {
@@ -41,6 +43,22 @@ TOOLCHAINS: Dict[str, Toolchain] = {
     ),
     "mingw-x86": Toolchain(
         "mingw-x86", "i686-w64-mingw32-gcc", "i686-w64-mingw32-g++", "i686-w64-mingw32-strip", "pe", 32, []
+    ),
+    # The only AArch64 corpus this project had was eleven Mach-O images whose truth is a
+    # linker's; this one's truth is a compiler's, on the same source the x86 matrix uses,
+    # which is what makes an architecture comparison a comparison rather than two anecdotes.
+    "gcc-arm64": Toolchain(
+        "gcc-arm64",
+        "aarch64-linux-gnu-gcc",
+        "aarch64-linux-gnu-g++",
+        "aarch64-linux-gnu-strip",
+        "elf",
+        64,
+        [],
+        # BTI is AArch64's CET: a landing pad at every indirect-branch target, emitted only
+        # under -mbranch-protection, which is how the major distributions ship aarch64 code.
+        # Without this cell nothing here contains the construct in any density.
+        extra_variants=[("O2-bti", ["-O2", "-mbranch-protection=standard"])],
     ),
 }
 
@@ -160,6 +178,7 @@ def build(
     work_dir: str,
     programs: Optional[List[str]] = None,
     toolchains: Optional[List[str]] = None,
+    family: str = "native",
 ) -> Dict[str, object]:
     binary_dir = os.path.join(out_dir, "binary")
     truth_dir = os.path.join(out_dir, "truth")
@@ -175,7 +194,7 @@ def build(
             continue
         for toolchain_key in toolchains or sorted(TOOLCHAINS):
             toolchain = TOOLCHAINS[toolchain_key]
-            variants = PE_VARIANTS if toolchain.container == "pe" else VARIANTS
+            variants = (PE_VARIANTS if toolchain.container == "pe" else VARIANTS) + toolchain.extra_variants
             for variant, flags in variants:
                 built = buildCell(program, toolchain, variant, flags, source_root, work_dir)
                 record = {"program": program_key, "toolchain": toolchain_key, "variant": variant}
@@ -189,7 +208,7 @@ def build(
                 with contextlib.suppress(OSError):
                     os.remove(str(built["unstripped"]))
     manifest = {
-        "family": "native",
+        "family": family,
         "cells": cells,
         "ok": sum(1 for cell in cells if cell.get("status") == "ok"),
         "failed": sum(1 for cell in cells if cell.get("status") not in ("ok",)),
