@@ -2479,3 +2479,68 @@ No proposal yet, and deliberately so. The exemption was justified on 50 labelled
 question is what it is worth *there* — a condition that is right on ELF and wrong on PE dumps wants a
 narrower predicate, not a revert. The ByteWeight PE sets and the 260-cell C/C++ matrix are running
 either side of the same single line.
+
+---
+
+## 2026-08-25 — pricing the exemption on the corpus it was justified against
+
+The 50-binary boundary corpus behind the commit's own measurement is now available here, with its
+scoring harness, so the condition can be priced on both sides rather than only on the side that pays.
+The truth extractor reports 11,384 labelled functions, which matches the figure recorded for it — the
+control that the corpus is the same one.
+
+All three trees are `5f70672`; the only difference is that one line.
+
+**The 50 ELF binaries, `recall` and `body_splits`, analysis run on stripped copies:**
+
+| variant | recall | recovered | body splits |
+|---|---|---|---|
+| exemption as shipped | **95.098%** | 10,826 / 11,384 | 306 |
+| narrowed to more than one call reference | 95.081% | 10,824 | 308 |
+| no exemption | 94.993% | 10,814 | 308 |
+
+**The 57 malware dumps, filter `all`, macro mean:**
+
+| variant | PPV | TPR | F1 | TP | FP |
+|---|---|---|---|---|---|
+| exemption as shipped | 92.639 | 98.561 | 95.142 | 21,688 | **2,583** |
+| narrowed to more than one call reference | 93.038 | 98.548 | **95.373** | 21,685 | 2,540 |
+| no exemption | 93.180 | 98.515 | 95.439 | 21,679 | 2,508 |
+
+**The exemption is not a mistake.** It buys 12 real functions on the corpus it was written for and
+removes two body splits. It is a predicate that is right on ELF executables and wrong on memory dumps,
+which is a different thing from a defect and wants a narrower predicate rather than a revert.
+
+### The narrower predicate the codebase already names
+
+`FunctionCandidate.getConfidence` scores a candidate with more than one inbound call reference at
+1.0 outright, on the stated grounds that *multiple* inbound call references are essentially always a
+function. One is weaker evidence, and the tree already says so. Requiring the same threshold before
+the alignment floor is waived:
+
+- keeps **10 of the 12** ELF functions the exemption gains — 83% of its benefit
+- removes **43 of the 75** malware-corpus false positives — 57% of its cost
+- recovers **+0.231** of the 0.297 F1 the corpus lost, or 78% of it
+
+It is a strict improvement on what is shipped, on both corpora at once, and it is still not free:
+malpedia recall goes 98.561 → 98.548 and ELF recall 95.098 → 95.081. Under this branch's own rule —
+no recall drop on any corpus at any step — it would not land here as it stands.
+
+### Where the full ledger sits
+
+Effect of the condition as shipped, both sides at `5f70672`, every corpus available here:
+
+| corpus | n | ΔF1 | ΔTP | ΔFP |
+|---|---|---|---|---|
+| boundary corpus (50 ELF) | 50 | *recall +0.105 pt* | **+12** | *−2 body splits* |
+| Bao byteweight msvc10-32 | 68 | +0.011 | +2 | −2 |
+| Bao_Dumped msvc10-32-d | 56 | +0.013 | +2 | −2 |
+| Built C/C++ (gcc, clang, mingw) | 260 | −0.001 | +34 | +26 |
+| Bao byteweight msvc10-64 | 68 | −0.002 | −3 | +6 |
+| Bao_Dumped msvc10-64-d | 56 | −0.036 | −3 | **+75** |
+| Plohmann malpedia itw | 57 | **−0.297** | +9 | **+75** |
+
+The two corpora that pay are both 64-bit-capable dumped sets, but "dumped" is not the discriminator:
+the 32-bit dumped ByteWeight set *gains* 0.013, and the sample that gains the most false positives on
+malpedia is a 32-bit dump. What separates them is not yet established, and finding it is what would
+turn the narrowed predicate into a free one.
