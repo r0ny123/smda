@@ -831,10 +831,12 @@ def generate_markdown_report(model, output_path):
         f"| Std dev / IQR | {paired['stdev_speedup']:.2f}% / {paired['iqr_speedup']:.2f}% |",
         f"| Wilcoxon signed-rank p | {_fmt_p(wil)} |",
         "",
-        "> ℹ️ base and PR are timed on **separate** CI runners, so a small median "
-        "difference can reflect per-runner hardware variance rather than code. "
-        "Differences within the timing noise band above are reported as inconclusive; "
-        "correctness and determinism are unaffected (they are not timing-based).",
+        "> ℹ️ base and PR are timed in the **same job on the same runner**, with their passes "
+        "interleaved base/PR/PR/base/base/PR so that drift over the job cancels rather than "
+        "landing on whichever side ran last. The noise band above is therefore run-to-run "
+        "variation on one machine, which is what it is able to measure; a difference inside it "
+        "is reported as inconclusive. Correctness and determinism are not timing-based and are "
+        "unaffected either way.",
         "",
         "#### Determinism (self-check across repeated runs)",
         "| Side | Runs | Files | Deterministic | Median timing CV |",
