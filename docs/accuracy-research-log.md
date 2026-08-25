@@ -2697,3 +2697,41 @@ recovery. Two things follow, and both are harness work rather than disassembler 
    evidence, the way the ByteWeight entry already records its own.
 
 Neither changes a published figure — a body-split column is added beside PPV, not instead of it.
+
+---
+
+## 2026-08-25 — why one call reference is worth more on an ELF than on a dump
+
+The open question was what separates the corpora the alignment-floor exemption helps from the ones
+it costs. It is not the corpus. It is whether the *referencing instruction* is real code.
+
+Taking only the bucket the entry-shape predicate cannot save — a candidate with exactly one call
+reference and no recognised entry shape — and asking where that one reference comes from:
+
+| one reference, no entry shape | count | the referencing instruction is itself labelled code |
+|---|---|---|
+| malpedia, real | 3 | 2 (66.7%) |
+| **malpedia, spurious** | **18** | **0 (0.0%)** |
+| ELF, real | 5 | 5 (100%) |
+| ELF, spurious | 0 | — |
+
+**Every one of the eighteen spurious admissions is referenced from an instruction that is not real
+code.** The evidence the exemption trusts was manufactured by a misdecode: something in a packed or
+obfuscated region decoded as a `call`, and its operand became the only reason an address off the
+alignment floor was admitted.
+
+That explains the whole corpus split without appealing to the corpus. A lone call reference in a
+compiler-built ELF comes from an instruction that is really there, so it is good evidence; in a dump
+of packed malware it often does not, so it is not. The exemption is not wrong about ELF and right
+about dumps — it is trusting a signal whose reliability depends on something it never checks.
+
+**Sample size is the honest limit here**: 26 candidates across both corpora, 18 of them the spurious
+side. A 18-to-0 split is clean and the mechanism is sensible, but it is not a population you fit a
+rule to. What it gives is a direction, and the next measurement is the mechanism on a larger one —
+every singly-referenced candidate rather than only the ones this exemption admits.
+
+**Implementability is the second open question.** "The referencing instruction is labelled code" is
+not available during analysis; the runtime proxy would be something like "the reference comes from
+inside a function already recovered on stronger evidence", and whether that proxy separates the same
+way has to be measured rather than assumed — it reads the recovered set, which is the circularity
+that already caught this investigation once.
