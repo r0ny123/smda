@@ -527,6 +527,21 @@ A byte scan across all 140 ELF cells finds **69,971 `endbr64` occurrences in `.t
 (21.4%) are not at a declared function start** — 12,564 from gcc and 2,422 from clang. The corpus
 holds 26,702 false positives in total, so this one pattern bounds more than half of them.
 
+**Closed.** Two rules built on what the image declares — sections 20 and 23 — take this class to
+nothing. Measured over six representative C/C++ cells, with both options turned off to isolate what
+they contribute:
+
+| configuration | false positives | of which `endbr64`-headed | true positives |
+|---|---|---|---|
+| this branch with both options off | 1,210 | **822** | 5,695 |
+| as shipped, `USE_LSDA_LANDING_PADS` on | 119 | **0** | 5,717 |
+| plus `USE_ELF_FDE_INTERIOR_GAPS` | 80 | **0** | 5,718 |
+
+Not one `endbr64`-headed false positive survives either rule, and true positives rise rather than
+fall at each step. The worst cell in the table above, `googletest_gcc-x64_O2`, goes from 858 false
+positives to 63. What is left is 80 addresses that have nothing to do with this pattern, so the
+ceiling this item named is reached rather than approached.
+
 The obvious repair — seed an `endbr64` only where the bytes before it end a function or pad between
 functions — was measured and **rejected**; section 6 records all five variants tried and what each
 cost. The best of them refuses 12,301 spurious pads and 1,840 real function starts with them, and a
