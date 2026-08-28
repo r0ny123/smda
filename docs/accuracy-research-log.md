@@ -3491,3 +3491,84 @@ Swept the class across both candidate managers. Every other loop over an image-d
 already polls — including the AArch64 sibling that reads its own exception directory the same way —
 so this was one site, not a family. That is the useful half of the sweep: a single-site result is
 evidence only once the siblings have been looked at.
+
+## 2026-08-28 — the jump-table bound was lost one instruction from the end of the walk
+
+Section 13's item 2 named jump-table resolution as the lever and ranked it first, on the grounds
+that a case body the pass learns to resolve stops being a false positive and stops splitting a real
+function in the same move. This is the first mechanism found under that heading, and it is smaller
+than the item's ceiling for a reason worth recording.
+
+`brotli` built by gcc at `-O2` has a 27-case switch. The pass resolved **2** of it.
+
+```
+    lea     rsi, [rip + 0x6e189]        ; table base
+    mov     qword ptr [rsp], rsi        ; spilled, the dispatch is reached from several places
+    cmp     dword ptr [rbx], 0x1a       ; the real bound, checked against a memory cell
+    ja      default
+    mov     rdi, qword ptr [rsp]        ; reloaded
+    mov     eax, dword ptr [rbx]
+    movsxd  rax, dword ptr [rdi + rax*4]
+    add     rax, rdi
+    notrack jmp rax
+```
+
+`_findJumpTableSize` seeds itself from the branch operand and walks back through copies, which is
+the right design and already handles a bound checked against a memory cell rather than a register.
+It never reached the cell. `add rax, rdi` is not a copy, so the walk read it as a redefinition and
+dropped the tie one instruction short of the table read — the only place the switch index is named.
+With nothing tied, the untied fallback answered with the first register-against-immediate compare in
+the window, which was an unrelated compare from earlier in the function, and sized the table at 2.
+
+The same dispatch resolved 33 targets when it was reached during a *different* function's decode,
+because that decode's backtrack window held a different compare. Two answers for one dispatch,
+neither of them 27, is what made this look like a shape the pass could not follow rather than a
+walk that stopped early.
+
+**The fix carries the tie across the step that adds a base to the value it overwrites**, in both
+spellings a compiler uses: `add <reg>, <reg or memory>`, and a `lea` whose address reads the
+register it writes. An immediate source stays a redefinition — that is index arithmetic, not a base
+— and so does a write back into a memory cell, because a compare against a cell that has since been
+written to is not a bound on what is loaded out of it afterwards.
+
+### What it is worth, on two baselines
+
+140 built C/C++ cells, gcc and clang, 117,389 truth functions, `--filter all`, macro means.
+
+| baseline | | PPV | TPR | TP | FP |
+|---|---|---|---|---|---|
+| `master` | before | 93.630 | 96.962 | 113,173 | 14,388 |
+| `master` | after | 93.655 | 96.962 | 113,173 | **14,368** |
+| this branch's engine | before | 98.979 | 97.097 | 113,381 | 1,526 |
+| this branch's engine | after | 98.979 | 97.097 | **113,383** | 1,526 |
+
+On `master` it removes 20 false positives over five cells and loses no true positive anywhere.
+On top of the landing-pad and FDE-interior rules it removes none and *gains two*, on
+`googletest_gcc-x64_O2-static` and `googletest_clang-x64_O2-static`.
+
+**That difference is the useful finding, and it re-prices item 2.** The two declared-range rules
+already refuse the interior candidates this would otherwise remove, so on this branch the two
+changes overlap almost completely on the start metric. The item's ~5 points of precision were
+collected by those rules; what jump-table resolution adds on top of them is not more precision but
+a more complete function — the case bodies come back as *blocks* of the routine that dispatches to
+them rather than merely not being separate functions. A start-based metric scores that at +2.
+
+Anyone reading item 2's ceiling as still available on this branch would be double-counting.
+
+### Controls
+
+8 built Rust cells are bit-identical, and no dispatch on any of them changed its recovered bound —
+recorded at every dispatch under both trees, so the identity is a property of the input rather than
+of a run that did not happen. LLVM leaves the bound check as the nearest register compare, so the
+untied fallback was already reading the right one; the shape this fixes is what gcc emits when the
+base is spilled across the bound check. Every result file records the module path its run imported,
+which is the only thing in a result that proves which of two checkouts produced it.
+
+### Sweep
+
+The class is a value walk that reads a read-modify-write of the register it is chasing as a
+redefinition. The AArch64 jump-table analyzer adds both source registers of its merging `add` back
+into its tracked set and ties the bound to the index register taken from the table load rather than
+from the branch operand, so it never had this. The indirect-call resolver and the syscall-number
+walk chase a concrete value rather than a provenance tie: carrying either past an unmodelled write
+would report a wrong value, so stopping there is correct and neither is an instance. One site.
