@@ -3751,3 +3751,66 @@ way — the first histogram was taken before the corpus was checked, and the cor
 because the histogram pointed somewhere specific enough to go and look. Neither would have been caught
 by more careful reasoning about the numbers that existed. The order that works is: attribute, then go
 and look at what the attribution names, then re-attribute.
+
+## 2026-08-28 — two review findings, one accepted and one measured and rejected
+
+Both came from the review bot on the two engine PRs. Recording them because one is a bug the corpus
+never exercised, and the other is a remedy that reads as obviously right and is not.
+
+### The base-add carry was too wide, and the corpus could not have caught it
+
+The rule that carries the bound's tie across a relative dispatch's base add admitted any register or
+memory `add` writing a tracked register, anywhere in the backtrack window. Index arithmetic looks
+identical:
+
+```
+    mov     eax, dword ptr [rbx]
+    add     rax, rcx                  <- the index becomes a sum
+    movsxd  rax, dword ptr [rdi + rax*4]
+    add     rax, rdi                  <- the base combine
+    jmp     rax
+```
+
+The compare against `[rbx]` bounds one summand. Carried across `add rax, rcx` it was reported as the
+table's bound, and an *undersized* bound is the worse direction — it is trusted as exact, so the scan
+truncates and the later case bodies go back to the gap scan, which is the failure the change exists
+to fix.
+
+Narrowed to the instruction the branch reads, which is where the combine sits in every shape the
+analyzer recognizes. **No cell of the 140-cell corpus moves**: the recovered function set is identical
+under both predicates. The corpus does not contain the shape, so no amount of measuring would have
+found this — only reading the predicate against instructions the corpus does not happen to hold.
+
+### The alignment-floor exemption: proposed, measured, rejected
+
+The AArch64 change removes a manufactured call reference, and a call reference is one of the two
+exemptions from the inferred alignment floor. The natural objection is that a genuine 4-byte-aligned
+function reachable only through that branch now falls below the floor, and the natural remedy is to
+exempt `is_tailcall` as well. Built and measured on the same base:
+
+| | Go PPV | Go FP | Mach-O TP |
+|---|---|---|---|
+| baseline | 94.293 | 10,514 | 2,532 |
+| the change | **94.369** | **10,354** | 2,532 |
+| the change + the exemption | 94.293 | 10,514 | 2,532 |
+
+It gives back **all 160** false positives, per cell exactly — every Go arm64 cell returns to its
+baseline count. That is the change reverted rather than softened, because every candidate this site
+seeds is a tailcall candidate, so exempting the flag re-admits the whole population.
+
+And it does not save the one function the change costs. `RustyPages_e98756472404` is 501 either way.
+The reason is the useful part:
+
+```
+identified_alignment = 4     on that image
+0x10000548c % 16 = 12        -> alignment 4
+```
+
+The floor there is 4 and the address is 4-aligned, so the floor never refused it. **That loss is
+analysis order, not eligibility** — the score decides which candidate is drained first, and without
+the manufactured reference this one is drained after the function that absorbs it. A remedy aimed at
+the floor cannot reach an address the floor was already letting through.
+
+The lesson is the one this branch keeps relearning: a mechanism named from the shape of a change is a
+hypothesis. This one was wrong about which of two mechanisms was operating, and only a per-image
+value said so.
