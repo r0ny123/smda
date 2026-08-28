@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import lief
 
@@ -53,6 +53,62 @@ def _inExecutableRange(address: int, ranges: List[tuple]) -> bool:
     return any(start <= address < end for start, end in ranges)
 
 
+#: every PLT stub on every target here is 16 bytes; only the header in front of them varies
+PLT_ENTRY_SIZE = 16
+#: 0 for a static image's IFUNC-only PLT, 16 on x86, 32 on AArch64 -- an implausible answer
+#: means the shape was not recognized and the section is named rather than guessed at
+PLT_HEADER_SIZES = (0, 16, 32)
+
+
+def _pltRelocationCount(binary) -> int:
+    """How many stubs the PLT holds, read from the relocations that fill them.
+
+    LIEF's `pltgot_relocations` is empty on a statically linked image, whose PLT exists
+    only for IFUNC resolution and is filled from `.rela.iplt`, so the section is measured
+    directly rather than asked for by role.
+    """
+    for section in binary.sections:
+        if section.name in (".rela.plt", ".rel.plt") and section.size and section.entry_size:
+            return section.size // section.entry_size
+    return sum(1 for _ in binary.pltgot_relocations)
+
+
+def pltStubs(binary) -> Tuple[Set[int], List[str]]:
+    """Every PLT stub address, and the sections whose layout could not be established.
+
+    `sh_entsize` is not usable on its own: the AArch64 linker leaves `.plt` at zero, and so
+    does rustc's on x86-64, which silently dropped every stub of those images from the truth
+    -- 4,181 of them across the 72 AArch64 cells, scored against the engine as false
+    positives. The count of PLT relocations is what the table's length actually follows, so
+    the header is derived from it and checked against the three sizes that exist.
+
+    The first entry of `.plt` is PLT0, the lazy-binding trampoline: it is reached by falling
+    out of a stub, never called, and no disassembler in this comparison reports it. It is
+    already excluded, because the derived header is its size. `.plt.sec` and `.plt.got` have
+    no header at all, and there `sh_entsize` is reliable.
+    """
+    stubs: Set[int] = set()
+    unresolved: List[str] = []
+    for section in binary.sections:
+        if section.name not in (".plt", ".plt.sec", ".plt.got") or not section.size:
+            continue
+        if section.name == ".plt":
+            count = _pltRelocationCount(binary)
+            header = section.size - PLT_ENTRY_SIZE * count
+            if not count or header not in PLT_HEADER_SIZES:
+                unresolved.append(section.name)
+                continue
+            entry_size, first = PLT_ENTRY_SIZE, header
+        elif section.entry_size:
+            entry_size, first = section.entry_size, 0
+        else:
+            unresolved.append(section.name)
+            continue
+        for offset in range(first, section.size, entry_size):
+            stubs.add(section.virtual_address + offset)
+    return stubs, unresolved
+
+
 def elfFunctionStarts(path: str) -> Dict[str, object]:
     """STT_FUNC symbol addresses from an unstripped ELF, plus its PLT stubs.
 
@@ -78,19 +134,11 @@ def elfFunctionStarts(path: str) -> Dict[str, object]:
         if ranges and not _inExecutableRange(address, ranges):
             continue
         starts.add(address + image_base)
-    plt: Set[int] = set()
-    for section in binary.sections:
-        if section.name not in (".plt", ".plt.sec", ".plt.got") or not section.entry_size:
-            continue
-        # the first entry of `.plt` is PLT0, the lazy-binding trampoline: it is reached
-        # by falling out of a stub, never called, and no disassembler in this comparison
-        # reports it. `.plt.sec` and `.plt.got` have no such entry.
-        first = section.entry_size if section.name == ".plt" else 0
-        for offset in range(first, section.size, section.entry_size):
-            plt.add(section.virtual_address + offset)
+    plt, unresolved_plt = pltStubs(binary)
     return {
         "starts": sorted(starts),
         "plt": sorted(plt),
+        "plt_sections_unresolved": unresolved_plt,
         "bitness": 64 if binary.header.identity_class == lief.ELF.Header.CLASS.ELF64 else 32,
         "entrypoint": binary.header.entrypoint,
         "source": "elf symtab STT_FUNC",
