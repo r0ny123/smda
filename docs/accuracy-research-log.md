@@ -3647,3 +3647,75 @@ scan is now nearly the whole of what is left on Rust, not four percent of it.
 
 The two figures are not in conflict; they describe different engines. Anyone re-reading item 3 should
 take the histogram again rather than trust the one recorded there.
+
+## 2026-08-28 — most of the AArch64 precision gap was a missing PLT list
+
+Following the reference-pass finding above one level further turned it into a corpus defect, and
+repairing it removes **61% of the architecture precision gap** the agenda's item 1 is built on.
+
+### How it was found
+
+The `BL` word scan books 277 of the reference-pass false positives over six matched `O2` cells. The
+first three hypotheses about them were all measured and all wrong:
+
+- *Data misread as calls.* No: 93.2% of the referencing sources behind them are instructions the
+  analysis really decoded inside a recovered function.
+- *They are distinguishable at booking time.* No, and the features point the wrong way: **100%** of
+  the false positives are 16-aligned against 75.9% of the true positives, and 93.5% have all their
+  sources decoded against 84.1%. On every feature available they look *more* like functions than the
+  functions do. Requiring more than one inbound reference would drop 38% of them and 20% of the
+  true positives with them.
+- *The truth is incomplete and these are real functions the symbol table does not name.* Half right,
+  and the half that is right is the whole finding. Crossed against `.eh_frame`: 1,967 of 1,973 true
+  positives have an FDE of their own and **0 of 277 false positives do**. That looked like proof they
+  are not functions — until asking where they are. All 277 are in `.plt`.
+
+### The defect
+
+`elfFunctionStarts` read the PLT's layout out of `sh_entsize` and skipped any section whose value was
+zero. The AArch64 linker leaves it at zero. So did rustc's on x86-64, and so does the linker on twenty
+of the x86 cells.
+
+Every PLT stub of those images was missing from the ground truth, and the harness's own convention —
+stated in `tools/bench/README.md`, "ELF PLT entries are treated the same way" — says they are truth.
+**4,483 stubs across 90 cells**, every one of them scored against the engine as a false positive.
+
+The length of the table follows the number of PLT relocations, so the header in front of the stubs is
+derived from that and checked against the three sizes that exist: 0 for a static image's IFUNC-only
+PLT, 16 on x86, 32 on AArch64. Statically linked images fill theirs from `.rela.iplt`, which LIEF does
+not report as PLT relocations, so the section is measured rather than asked for by role. Thirteen
+cells whose shape fits none of the three are named in `plt_sections_unresolved` instead of guessed at.
+
+Checked against the old rule on all 251 built ELF cells: 153 identical, and all 90 that change are
+purely additive — no address the old rule produced is dropped.
+
+### What it moves
+
+Same engine, `--filter all`, macro means. Only the truth differs.
+
+| corpus | n | truth | PPV | TPR | TP | FP |
+|---|---|---|---|---|---|---|
+| Built C/C++ AArch64 | 72 | as published | 80.566 | 95.966 | 54,982 | 7,953 |
+| | | repaired | **91.996** | **96.538** | 59,167 | **3,768** |
+| Built C/C++ x86-64 | 140 | as published | 98.979 | 97.097 | 113,383 | 1,526 |
+| | | repaired | **99.093** | **97.103** | 113,648 | **1,261** |
+| Built Rust | 8 | as published | 95.300 | 98.432 | 4,689 | 237 |
+| | | repaired | **95.685** | **98.438** | 4,708 | **218** |
+
+**The architecture precision gap goes from 18.41 points to 7.10.** Item 1's headline — "the gap is 17
+points of precision, not recall" — was 61% measurement error. The remaining 7.1 points are real and
+the reference pass is still the largest single contributor to them, but the size of the prize is less
+than half what was recorded.
+
+Every AArch64 and Rust precision figure recorded on this branch before today is understated by this,
+and so is every x86 figure on the twenty affected cells. The recall figures move too, upward, because
+the recovered stubs were already being found.
+
+### The method note worth keeping
+
+Three hypotheses died before the right one. What killed each was asking for a *property of the
+addresses themselves* rather than of the engine: what fraction are aligned, how many inbound
+references, is there an unwind record, which section. The unwind cross-check is what made the last one
+unavoidable — a perfect 1,967/1,973 against 0/277 is not a heuristic result, and a separation that
+clean says the two populations differ by construction rather than by degree. That is the point at
+which to stop looking for a filter and start asking what the population *is*.
