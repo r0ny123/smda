@@ -3719,3 +3719,35 @@ references, is there an unwind record, which section. The unwind cross-check is 
 unavoidable — a perfect 1,967/1,973 against 0/277 is not a heuristic result, and a separation that
 clean says the two populations differ by construction rather than by degree. That is the point at
 which to stop looking for a filter and start asking what the population *is*.
+
+## 2026-08-28 — the attribution, retaken against the repaired truth, refutes the finding above
+
+Correcting the entry two above. "The architecture gap is the reference pass" was measured against the
+truth that was missing 4,483 PLT stubs, and those stubs are reference-booked. Retaking the histogram
+on the repaired truth, same engine, same cells:
+
+| pass, sole | x86-64, 140 cells | AArch64, 72 cells | AArch64 before the repair |
+|---|---|---|---|
+| `addPrologueCandidate` | 390 | 1,343 | 1,343 |
+| `addReferenceCandidate` | 359 | **1,093** | 4,994 |
+| `addGapCandidate` | 436 | 1,048 | 1,180 |
+| `addTailcallCandidate` | – | 156 | 256 |
+| total false positives | 1,261 | 3,768 | 7,953 |
+
+The reference pass drops by 3,901, which is the stubs and almost nothing else. What is left is
+**flat**: no pass dominates, and the AArch64 distribution now has the same shape as the x86 one.
+
+Per cell that is 52.3 false positives against 9.0, so AArch64 still costs about six times as much
+precision — but **uniformly across all three seeding passes**, at 3.4x, 3.0x and 2.4x the x86 count on
+half the cells. There is no single mechanism to name, and the intermediate claim that there was one
+was an artifact of the corpus rather than a property of the engine.
+
+That is a worse answer to have than "it is the reference pass", and it is the true one. The useful
+part is what it rules out: a repair aimed at one pass cannot close this, because no pass holds more
+than 36% of it.
+
+**Method, since this is the second hypothesis in a day that a measurement killed.** Both died the same
+way — the first histogram was taken before the corpus was checked, and the corpus was only checked
+because the histogram pointed somewhere specific enough to go and look. Neither would have been caught
+by more careful reasoning about the numbers that existed. The order that works is: attribute, then go
+and look at what the attribution names, then re-attribute.
