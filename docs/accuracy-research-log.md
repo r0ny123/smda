@@ -3572,3 +3572,78 @@ into its tracked set and ties the bound to the index register taken from the tab
 from the branch operand, so it never had this. The indirect-call resolver and the syscall-number
 walk chase a concrete value rather than a provenance tie: carrying either past an unmodelled write
 would report a wrong value, so stopping there is correct and neither is an instance. One site.
+
+## 2026-08-28 — where every corpus' false positives are actually booked
+
+Sections 13.1 and 13.3 both asked for the same measurement and neither had it for the state the
+engine is now in: which pass books each false positive. `tools/bench/attribute.py` takes it. Run
+over all five built corpora on this branch's engine plus the two fixes recorded above.
+
+Two columns, because one does not answer. **First** is the pass whose call came first, which is what
+a trace shows — but the prologue sweep runs once over the whole image before anything else, so it is
+first for every address that merely looks like an entry. **Sole** counts addresses exactly one pass
+ever booked; those are the ones that disappear if that pass changes, and they are what a repair can
+claim.
+
+| corpus | n | false positives | biggest sole source | its share |
+|---|---|---|---|---|
+| Built C/C++ (x86-64) | 140 | 1,526 | `addGapCandidate` 436 | 28.6% |
+| Built C/C++ (AArch64) | 72 | 7,953 | `addReferenceCandidate` **4,994** | 62.8% |
+| Built Go | 47 | 10,354 | `addGapCandidate` 5,416 | 52.3% |
+| Built Rust | 8 | 237 | `addPrologueCandidate` **204** | 86.1% |
+| ARM64 Mach-O | 11 | 388 | `addGapCandidate` 222 | 57.2% |
+
+### The architecture gap has a name
+
+Item 1 said the AArch64 gap is 17 points of precision and that no single mechanism was identified.
+Holding programs and compiler family constant — the same ten sources through gcc, x86-64 against the
+cross compiler — one pass accounts for the difference:
+
+| | x86-64, 140 cells | AArch64, 72 cells |
+|---|---|---|
+| false positives | 1,526 | 7,953 |
+| `addReferenceCandidate`, sole | 359 | **4,994** |
+| `addPrologueCandidate`, sole | 392 | 1,343 |
+| `addGapCandidate`, sole | 436 | 1,180 |
+
+Fourteen times the count on half the cells. Every other pass is within a factor of three. **The
+architecture gap is the reference pass**, and the other three are ordinary scale.
+
+Narrowing it further, by which of the AArch64 manager's four reference call sites books each address,
+over six matched `O2` cells:
+
+| call site | false positives | true positives |
+|---|---|---|
+| the `BL` word scan | 277 | 1,973 |
+| the pointer-table scan | 67 | 504 |
+| the third site | 18 | 188 |
+
+The `BL` scan is three quarters of it, and it is also where most of the recall comes from, so the
+repair is a filter on what it produces and not its removal.
+
+### A hypothesis that looked obvious and is wrong
+
+The intel analogue scans for `0xE8` and computes a `rel32`; a random `rel32` almost never lands
+inside a small image, so that scan filters itself. The AArch64 scan matches any word whose top six
+bits are `100101` — one word in 64 — and its 26-bit immediate reaches ±128 MB, so for any image
+smaller than that *every* match yields an in-image target. The obvious conclusion is that the scan is
+reading data as calls.
+
+Measured, and it is not. On `sqlite3_gcc-arm64_O2`, 93.2% of the referencing sources behind the
+reference-booked false positives are instructions the analysis really did decode inside a recovered
+function, and 85.7% of all reference sources are. These are mostly real `BL` instructions whose
+targets are not function starts, not data misread as code. Whatever the filter turns out to be, it is
+not "was this source decoded as code".
+
+### What this re-ranks
+
+Item 3 attributed the Rust false positives as `addGapCandidate` 70.2%, `addReferenceCandidate` 25.5%,
+`addPrologueCandidate` 4.3%, and concluded that a byte pattern is "bounded at 370 of 8,678 however
+well chosen". That was measured before the landing-pad and FDE-interior rules landed. It has
+inverted: **204 of 237, 86.1%, are now booked by the prologue scan and by nothing else**, and the gap
+scan is 14. The population also shrank from about 360 false positives per cell to about 30. The
+conclusion that item drew from its histogram no longer follows from the current one — the seeding
+scan is now nearly the whole of what is left on Rust, not four percent of it.
+
+The two figures are not in conflict; they describe different engines. Anyone re-reading item 3 should
+take the histogram again rather than trust the one recorded there.
