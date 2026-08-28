@@ -10,6 +10,16 @@ definitions and corpus composition; `tools/bench/README.md` documents the harnes
 Every number in this report states the corpus it was measured on, the sample count `n`, and the
 optimization filter. A figure without all three is not comparable with anything.
 
+> **Correction, 2026-08-28.** Every ELF precision figure below understates the engine, because the
+> truth these corpora were scored against was missing their PLT stubs. `sh_entsize` is zero on `.plt`
+> for the AArch64 linker, for rustc on x86-64, and on twenty of the x86 cells, and the truth builder
+> skipped any section whose value was zero — 4,483 stubs over 90 cells, every one charged to the
+> engine as a false positive. Repaired in `tools/bench/builders/truth.py`; the running log records the
+> before-and-after. The largest single effect is the AArch64 set, whose macro PPV goes 80.566 →
+> **91.996**, and with it the architecture gap in section 13.1 goes 18.41 points → **7.10**. Sections
+> 13.1 and 13.3 carry corrections of their own from the same day. Re-measure before quoting an ELF
+> precision figure from this document; recall figures move too, upward, and by less.
+
 ## 1. What was built
 
 A benchmark that runs from a clean checkout: `tools/bench/run.py` measures one or more engines over
