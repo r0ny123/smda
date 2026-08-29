@@ -96,6 +96,11 @@ class SmdaConfig:
     # the small aligned functions after it. On the cell examined, all eight functions
     # recovered sit 11 to 79 bytes past a declared extent's end.
     USE_PE_X64_PDATA_INTERIOR_GAPS = True
+    # Refuse a gap candidate that an ARM64 PE image's own exception directory places inside a
+    # routine. The same evidence and the same rule as the x64 flag above, reached differently:
+    # an ARM64 RUNTIME_FUNCTION has no EndAddress, so the extent is reconstructed from packed
+    # unwind data or from the .xdata record it points at.
+    USE_PE_ARM64_PDATA_INTERIOR_GAPS = True
     # Route a ReadyToRun assembly to the instruction set of its precompiled native body
     # instead of to the CIL backend. Such an assembly ships both, and the CLR header is why
     # the CIL half wins by default; the native half is then never analysed at all.
