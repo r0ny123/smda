@@ -826,6 +826,14 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         # ends in an unconditional `b` into the interior of already-mapped code (a
         # known instruction that is not itself a function-start candidate), the run is
         # a mid-function tail rather than a new function — so suppress it.
+        # The terminator set omits the trap words _endOfRefusedLandingPadRun stops at, and
+        # that is deliberate: skipping and suppressing cannot stop in the same places. A
+        # skip that reads one instruction too far steps over a real entry and loses it; a
+        # suppression that reads further only learns more about the same candidate. Nor is
+        # a trap a boundary the image declares - mid-body it is a bounds check, and it ends
+        # a function only by the backend's own END_INS convention - so the words behind it
+        # still belong to the enclosing routine. Pinned by
+        # tests/testAArch64GapRunTerminators.py.
         base = self.disassembly.binary_info.base_addr
         size = self.disassembly.binary_info.binary_size
         words = self._wordsView()
@@ -861,6 +869,9 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
 
         Falls back to the single-instruction step when no terminator is in reach, so a run
         of undecodable bytes cannot make this skip an arbitrary distance.
+
+        A trap ends the block here, unlike in _gapRunFlowsIntoInterior next door, which
+        shares this walk's bound but not that terminator.
         """
         base = self.disassembly.binary_info.base_addr
         size = self.disassembly.binary_info.binary_size
