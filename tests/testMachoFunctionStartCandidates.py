@@ -55,23 +55,23 @@ class MachoFunctionStartFixtureTestSuite(unittest.TestCase):
         on = _report(buffer, True)
         self.assertEqual(off.status, "ok")
         self.assertEqual(on.status, "ok")
-        # the primary pass recovers 24 more than it used to. Two of this image's functions end
-        # in a call that does not return, and the boundary rule now cuts there instead of
-        # decoding on into the next fifteen entries; a run of branch veneers whose targets gap
-        # analysis discovered is no longer refused by a guard reading a candidate set
-        # snapshotted before analysis; and one routine opens on a hoisted argument check, which
-        # the gap scan used to refuse for being a conditional branch. What the table pass adds
-        # on top shrinks by the same amount and the total with it on is unchanged -- the
-        # primary pass now discovers by itself what the table was compensating for.
-        # The last of those is why the table intersection moves with the count: the address is
-        # one the linker itself declares, so recovering it is a true positive and not a start
-        # the scan invented.
-        self.assertEqual(off.num_functions, 270)
-        self.assertEqual(on.num_functions, 275)
+        # the primary pass recovers 25 more than it used to, and 143 of the linker's own entries
+        # against 140. Two of this image's functions end in a call that does not return, and the
+        # boundary rule now cuts there instead of decoding on into the next fifteen entries; a
+        # run of branch veneers whose targets gap analysis discovered is no longer refused by a
+        # guard reading a candidate set snapshotted before analysis; one routine opens on a
+        # hoisted argument check, which the gap scan used to refuse for being a conditional
+        # branch; and the adr/adrp scan now runs on Mach-O, which reaches two more.
+        # Every one of those moves the table intersection with the count, which is what says
+        # they are addresses the linker itself declares rather than starts a scan invented.
+        # What the table pass adds on top shrinks as the primary pass absorbs its work, so the
+        # total with it on falls even as the total without it rises.
+        self.assertEqual(off.num_functions, 271)
+        self.assertEqual(on.num_functions, 274)
         table = _table_addresses(buffer)
         off_starts = {function.offset for function in off.getFunctions()}
         on_starts = {function.offset for function in on.getFunctions()}
-        self.assertEqual(len(table & off_starts), 141)
+        self.assertEqual(len(table & off_starts), 143)
         self.assertEqual(len(table & on_starts), 146)
         # a candidate source may only add starts, never drop one the primary pass found
         self.assertEqual(off_starts - on_starts, set())
