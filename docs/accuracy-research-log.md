@@ -3919,3 +3919,78 @@ The reason this is worth a log entry rather than a deleted branch: the second ch
 false-positive rate, and a check with no false positives and no discriminating power reports
 "checked, clean" on exactly the defect class it was added for. That is worse than not having it. A
 calibration that only measures the baseline will accept it.
+
+## 2026-08-29 — a declared table and a carved one are not the same evidence
+
+The PE exception-directory rule recorded above went out with a defect that the built corpora
+could not see and a malware corpus caught immediately. It is worth the entry because the mistake
+is a general one and the fix is a distinction rather than a threshold.
+
+The rule refuses a gap candidate that a `RUNTIME_FUNCTION` extent places inside a function, and
+resumes the scan at that extent's end. On built PE images that is a clean win. On the 57-sample
+malware corpus it cost **1,274 functions on one memory dump**, with a structural reading of the
+changed addresses calling 254 of them real.
+
+**The engine reads the exception table two ways and they are not equally trustworthy.** When the
+image declares a section table, the directory's location is read from it. When it does not —
+which is the normal case for a memory dump, since the mapped bytes survive and the header usually
+does not — the table has to be *found*, by scanning for a run of entries that validate as
+`RUNTIME_FUNCTION` records. That reconstruction was already used to seed candidates, where a wrong
+entry costs one bad address. Extending it to suppression made a wrong entry cost every gap-only
+function inside whatever range it named.
+
+Recording extents only from a declared table:
+
+| corpus | before | after |
+|---|---|---|
+| malware dumps, n=57 | −1,274 functions on one sample | **−1 function, −1 false positive** |
+| built Rust, n=24 | 79.477 PPV | **79.477 PPV, byte-identical** |
+
+The narrowing is free on every image that has a section header, which is every built corpus, and
+it is the whole of the regression on the images that do not.
+
+**The seed/suppress asymmetry is the transferable part.** Any evidence source can be graded by
+what a wrong entry costs. Seeding is cheap and self-correcting — a bad candidate is one false
+positive that later passes may absorb. Suppression is expensive and silent — a bad entry removes
+a region and nothing reports that it was removed. A source good enough for one is not
+automatically good enough for the other, and this rule crossed that line without anyone noticing
+because the corpora that could see it were not the corpora being run.
+
+### The one remaining loss, and why it is not one
+
+`0x14001161b` on an x64 malware dump. The image's own `.pdata` declares a single function
+`[0x140011424, 0x140011662)`; the corpus' manually annotated truth puts a second function inside
+it. The contested address is **unaligned** where 87.8% of that sample's truth is 16-aligned, has
+**zero inbound references**, and **falls through without returning** — eleven instructions ending
+in a `mov`. The address it sits inside is referenced, 133 instructions long, and ends in `ret`.
+
+That is a tail block of one function, annotated as two. It is a defect in the oracle rather than
+a recovery the engine lost, and it is recorded here rather than argued away because a single
+contested address is exactly where the temptation to fit the measurement to the change is
+strongest.
+
+## 2026-08-29 — the ByteWeight corpus, and what having it settled
+
+The corpus this log has referred to throughout as unobtainable became available. Three things it
+resolved, two of which reversed a conclusion recorded earlier.
+
+**The mispaired binary cannot be repaired, and now that is shown rather than assumed.** Its truth
+needs code up to `0x414d86`; the largest of the four builds of that program shipped in the corpus
+has executable bytes ending at `0x410a00`. The truth describes a build roughly 17 KB of code
+larger than anything present, so it is not a swap among the four variants — its partner is not in
+the corpus. Searching all 68 binaries for one whose executable ranges contain every one of its 472
+starts leaves only much larger, unrelated programs, none with anything near 472 functions of its
+own. Exclusion is the only remedy available.
+
+**A second defect that is not one.** Two builds of that program ship a byte-identical truth file
+while their binaries differ — the exact signature of the defect above, and the obvious thing to
+grep a corpus for. Their `.text` sections are byte-identical and the two files differ in 20 bytes
+of timestamp and checksum: the two optimisation settings produced the same code, so one truth file
+is correct for both. Worth recording because the cheap check for this defect class has a benign
+case that will fire on any corpus built this way.
+
+**The rejected detector, re-tested against the real thing.** The instruction-boundary straddle
+check was rejected above on *synthesised* mispairings, which was the weaker experiment available
+then. Against the genuine one — all sixteen binary-by-truth combinations of the four builds — it
+reports **zero straddles in every cell**, including the known-bad pairing. The rejection stands,
+and now rests on the case it was meant to catch rather than on a proxy for it.
