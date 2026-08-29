@@ -1,0 +1,142 @@
+{
+  "source": {
+    "title": "Classification, Characterization, and Contextualization of Windows Malware using Static Behavior and Similarity Analysis",
+    "author": "Daniel Plohmann",
+    "institution": "University of Bonn",
+    "year": 2022,
+    "pages": 207,
+    "section": "6.2.2 Evaluation",
+    "note": "Transcribed from the published document. Figures are as printed; nothing here is re-measured."
+  },
+  "engine_versions": {
+    "ghidra": "9.1.2",
+    "ida_pro_older": "6.7",
+    "ida_pro_newer": "7.4",
+    "nucleus": "unversioned, Andriesse et al.",
+    "smda": "1.2.5"
+  },
+  "corpora": {
+    "GB": {
+      "name": "ByteWeight",
+      "files": 68,
+      "note": "32- and 64-bit Windows PE, Microsoft Visual Studio, O1 and O2",
+      "truth": "102,532 function start and end locations; no instruction borders"
+    },
+    "GB_star": {
+      "name": "ByteWeight*",
+      "note": "the GB binaries memory-dumped, code shifted from RVA 0x400 to 0x1000, PE headers overwritten with null bytes"
+    },
+    "GA": {
+      "name": "Andriesse",
+      "note": "304 SPEC binaries at O0-O3, 20 servers, one 64-bit glibc; 803,602 functions, 55,698,481 instructions",
+      "available_here": false,
+      "reason": "SPEC CPU2006 is licence-restricted"
+    },
+    "GM": {
+      "name": "Malpedia57",
+      "files": 57,
+      "families": 56,
+      "truth": "21,920 function labels over 1,335,293 instructions",
+      "method": "memory dumps loaded in IDA Pro with no code detection heuristics enabled, then manually annotated; effort capped at 80 hours"
+    }
+  },
+  "table_6_3_manual_labelling_quality": {
+    "caption": "Quality of manual labeling against the ByteWeight ground truth. A function counts as correct only when its start and every instruction to its end match.",
+    "columns": ["name", "functions", "tpr", "fp", "fn"],
+    "rows": [
+      ["7z", 272, 0.992, 2, 2],
+      ["client7z", 644, 0.998, 249, 1],
+      ["pageant", 1104, 0.989, 59, 12],
+      ["putty", 2425, 0.989, 66, 27],
+      ["sfxsetup", 472, 0.998, 16, 1],
+      ["x64-client7z", 836, 0.994, 0, 5],
+      ["x64-sfxsetup", 460, 0.991, 0, 4],
+      ["Combined", 6213, 0.991, 392, 52]
+    ],
+    "stated_limitations": [
+      "overall TPR 99.16% and F1 0.965",
+      "most false negatives are unreferenced nullsubs, a single C3 (retn) instruction",
+      "client7z's 249 false positives are a ByteWeight ground-truth gap: the functions are genuinely referenced by other code but absent from the PDB-derived truth"
+    ]
+  },
+  "table_6_4_fep_reliability_by_refcount": {
+    "caption": "Reliability of function entry point detection (prologue, code reference and gap search combined) provided by SMDA. Refcount 0 means the start came from gap search.",
+    "columns": ["refcount", "tps", "fps", "ppv", "occurrence"],
+    "Bao": [
+      ["0", 96589, 6944, 0.933, 0.4508],
+      ["1", 39481, 2980, 0.930, 0.1843],
+      ["2", 25459, 206, 0.992, 0.1188],
+      ["3", 13650, 58, 0.996, 0.0637],
+      ["4", 8141, 64, 0.992, 0.0380],
+      ["5-8", 13594, 55, 0.996, 0.0634],
+      ["9-16", 8481, 31, 0.996, 0.0396],
+      ["17-32", 4260, 16, 0.996, 0.0199],
+      ["33-64", 2344, 0, 1.0, 0.0109],
+      ["65-128", 1181, 0, 1.0, 0.0055],
+      ["129-256", 625, 1, 0.998, 0.0029],
+      ["257-512", 298, 0, 1.0, 0.0014],
+      ["513-1024", 125, 0, 1.0, 0.0006],
+      ["1025-2048", 27, 0, 1.0, 0.0001]
+    ],
+    "Malpedia57": [
+      ["0", 4332, 1183, 0.786, 0.2019],
+      ["1", 8063, 749, 0.915, 0.3758],
+      ["2", 3490, 191, 0.948, 0.1627],
+      ["3", 1577, 78, 0.953, 0.0735],
+      ["4", 915, 44, 0.954, 0.0427],
+      ["5-8", 1482, 85, 0.946, 0.0691],
+      ["9-16", 822, 43, 0.950, 0.0383],
+      ["17-32", 438, 29, 0.938, 0.0204],
+      ["33-64", 184, 16, 0.920, 0.0086],
+      ["65-128", 96, 8, 0.923, 0.0045],
+      ["129-256", 40, 3, 0.930, 0.0019],
+      ["257-512", 11, 1, 0.917, 0.0005],
+      ["513-1024", 3, 1, 0.750, 0.0001]
+    ],
+    "All": [
+      ["0", 458563, 130861, 0.778, 0.4112],
+      ["1", 276795, 4320, 0.984, 0.2482],
+      ["2", 126961, 506, 0.996, 0.1138],
+      ["3", 62244, 178, 0.997, 0.0558],
+      ["4", 40130, 133, 0.997, 0.0360],
+      ["5-8", 65281, 170, 0.997, 0.0585],
+      ["9-16", 37955, 85, 0.998, 0.0340],
+      ["17-32", 21323, 47, 0.998, 0.0191],
+      ["33-64", 12492, 17, 0.999, 0.0112],
+      ["65-128", 6820, 10, 0.999, 0.0061],
+      ["129-256", 3591, 4, 0.999, 0.0032],
+      ["257-512", 1749, 1, 0.999, 0.0016],
+      ["513-1024", 841, 1, 0.999, 0.0008],
+      ["1025-2048", 346, 0, 1.0, 0.0003]
+    ]
+  },
+  "table_6_5_disassembler_comparison": {
+    "caption": "Recall and precision of function entry point discovery. Values are (TPR, PPV).",
+    "aggregation": "geometric mean per optimization level for rows labelled O0-O3; arithmetic mean over all binaries for rows with no such label",
+    "excluded_optimizations": ["Os", "Od", "Ox"],
+    "rows": [
+      {"gt": "GB", "pack": "ByteWeight", "compiler": "msvc10-32", "opt": "O1",
+       "ghidra": [0.804, 0.952], "ida74": [0.835, 0.996], "nucleus": [0.975, 0.923], "smda": [0.992, 0.935]},
+      {"gt": "GB", "pack": "ByteWeight", "compiler": "msvc10-32", "opt": "O2",
+       "ghidra": [0.809, 0.950], "ida74": [0.833, 0.996], "nucleus": [0.975, 0.894], "smda": [0.992, 0.927]},
+      {"gt": "GB", "pack": "ByteWeight", "compiler": "msvc10-64", "opt": "O1",
+       "ghidra": [0.675, 0.999], "ida74": [0.813, 0.999], "nucleus": [0.949, 0.969], "smda": [0.975, 0.983]},
+      {"gt": "GB", "pack": "ByteWeight", "compiler": "msvc10-64", "opt": "O2",
+       "ghidra": [0.703, 0.999], "ida74": [0.811, 0.999], "nucleus": [0.948, 0.938], "smda": [0.972, 0.981]},
+      {"gt": "GB*", "pack": "ByteWeight*", "compiler": "msvc10-32", "opt": "-",
+       "ghidra": [0.775, 0.953], "ida74": [0.743, 0.928], "nucleus": [0.745, 0.621], "smda": [0.967, 0.910]},
+      {"gt": "GB*", "pack": "ByteWeight*", "compiler": "msvc10-64", "opt": "-",
+       "ghidra": [0.653, 0.999], "ida74": [0.543, 0.999], "nucleus": [0.645, 0.413], "smda": [0.932, 0.985]},
+      {"gt": "GM", "pack": "Malpedia57", "compiler": "-", "opt": "-",
+       "ghidra": [0.819, 0.940], "ida74": [0.847, 0.964], "nucleus": [0.914, 0.627], "smda": [0.976, 0.935]}
+    ],
+    "instruction_recovery_on_GM": {"ghidra": 0.8884, "ida74": 0.8953, "smda": 0.9878, "nucleus": 0.9974,
+      "note": "nucleus's precision on GM is 0.480; its linear sweep reads much data as code"}
+  },
+  "thunk_convention": "All four disassemblers report the jmp thunks a Visual Studio incremental link emits in a PE, and the paper includes every such stub in the ground truth. External functions represented only by an offset are discarded using the disassembler's own external flag.",
+  "design_goals": [
+    "produce the same result whether the input is an unmapped file with full context or shellcode with none",
+    "completeness over precision: FEP discovery and gap analysis are deliberately aggressive and the resulting false positives are accepted",
+    "memory dumps of Windows malware are the target case, not on-disk executables"
+  ]
+}
