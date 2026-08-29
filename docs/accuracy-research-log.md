@@ -3814,3 +3814,108 @@ the floor cannot reach an address the floor was already letting through.
 The lesson is the one this branch keeps relearning: a mechanism named from the shape of a change is a
 hypothesis. This one was wrong about which of two mechanisms was operating, and only a per-image
 value said so.
+
+## 2026-08-29 — the Rust histogram splits by container, and the whole corpus says the opposite of half of it
+
+The Rust corpus is 24 cells: 8 `linux-gnu` ELF and 16 `windows-gnu` PE, 8 of each bitness. An
+environment carrying only the Linux rustc targets can build 8 of them, and a per-pass attribution
+taken on those 8 was recorded earlier in this log as having inverted the corpus' histogram —
+`addPrologueCandidate` at 86.1% of false positives where the whole corpus had it at 4.3%.
+
+Taken on all 24 cells, on the same engine:
+
+| pass | FP first | share | FP sole |
+|---|---|---|---|
+| `addGapCandidate` | 5,242 | 67.1% | 5,242 |
+| `addReferenceCandidate` | 2,196 | 28.1% | 2,172 |
+| `addPrologueCandidate` | 370 | 4.7% | 370 |
+
+The prologue count is 370 on both the original 24-cell measurement and this one. Nothing inverted.
+Splitting by container says why:
+
+| cells | truth | detected | FP | PPV | TPR | largest FP source |
+|---|---|---|---|---|---|---|
+| `linux-gnu` (8) | 4,784 | 4,926 | 218 | 95.57 | 98.41 | prologue 204 |
+| `windows-gnu-x64` (8) | 14,530 | 17,282 | 3,099 | 82.07 | 97.61 | gap 2,104 |
+| `windows-gnu-x86` (8) | 14,522 | 18,623 | 4,491 | 75.88 | 97.31 | gap 3,124 |
+
+218 of 7,808 false positives are on ELF. The 8-cell figures were correct about those 8 cells and
+worthless as a description of the corpus, because the passes they rank are not the axis the
+population varies along — the container is.
+
+**The trap, stated so it is not walked into again:** a per-pass histogram taken on a subset of a
+corpus whose cells span two containers is not a smaller version of the corpus' histogram. It is a
+different population. A subset that cannot be built is not a sampling problem to be noted in a
+caveat; it changes which of two answers the measurement gives.
+
+### What the gap candidates are
+
+The characterisation the corpus was asked for. On the 64-bit PE cells, of the false positives the
+gap scan alone booked, **98.8% (734 of 743 over three cells) sit strictly inside a function extent
+the image's own exception directory declares**. Against that:
+
+- **0** of the 878 true positives the gap scan alone booked are interior to a declared extent.
+- **0** of the 5,114 truth functions on those cells are interior to a declared extent.
+
+So the image had already answered the question the scan was guessing at, and the two populations
+are separated exactly, not statistically. Refusing an interior gap candidate and resuming at the
+extent's end takes the 24-cell corpus from PPV 75.915 to 79.477 with recall rising 97.496 to
+97.584, and the whole of it lands on the eight cells that carry the table:
+
+| cells | ΔFP | ΔTP | PPV |
+|---|---|---|---|
+| `linux-gnu` | 0 | 0 | 71.610 → 71.610 |
+| `windows-gnu-x86` | 0 | 0 | 75.885 → 75.885 |
+| `windows-gnu-x64` | −2,052 | +48 | 82.068 → **93.147** |
+
+47 Go cells lose 538 false positives with recall unchanged; the 11-cell ARM64 Mach-O corpus is
+bit-identical.
+
+**Why recall rises rather than holding.** The expected result was that recall would be untouched —
+the rule only refuses candidates. It rises because booking an interior address is not merely a
+wrong entry: it starts an analysis, and that analysis runs past the end of the routine the address
+sat inside and absorbs the small aligned functions laid out after it. All eight functions recovered
+on the cell examined sit 11 to 79 bytes past a declared extent's end, in the alignment padding that
+follows it. A precision rule paying a recall dividend is a signal that the false positive was
+costing something beyond its own count, and it is worth looking for the mechanism rather than
+banking the number.
+
+### What is left
+
+`windows-gnu-x86` is now the worst cell group in the corpus at PPV 75.885, and 32-bit PE carries no
+exception directory, so nothing here reaches it. Its gap scan books 3,124 false positives against
+131 true positives — a 96% error rate for that pass on those cells, which is a different question
+from the one this entry answers.
+
+Also worth recording: `addExceptionCandidate` on the 64-bit PE cells books 6,404 true positives,
+5,372 of them sole, and **0** false positives. The table was already the most precise seeding
+source in the engine; what it was not doing was suppressing.
+
+## 2026-08-29 — two ways to detect a mispaired ground truth, both measured and both rejected
+
+The harness checks one thing about a pairing: does every truth start land inside an executable
+section? That is what found the one known mispaired binary, whose truth has 181 of 472 starts past
+the end of `.text`. It cannot find the harder case — two builds of one program at different
+optimisation levels share a section layout, so a swapped truth file lands entirely inside `.text`
+and passes. Two candidate detectors for that case were built and calibrated. Neither shipped.
+
+**Direct-call-target coverage.** What share of truth starts is named by a `call` in the executable
+bytes, decoded without the engine. The premise is that a mispaired truth is called by nothing.
+Calibration on correct pairings ends it: Rust cells score **0.52% to 2.66%**, Go cells from
+**2.46%**, ARM64 Mach-O from **17.85%**. Rust and Go dispatch indirectly often enough that a correct
+pairing already looks like a wrong one, and there is no floor left to test against.
+
+**Instruction-boundary straddle.** Decode linearly from each truth start toward the next and ask
+whether an instruction begins before that next start and ends after it — two claims that cannot both
+describe one byte stream. The baseline is as clean as a check can be: **0.000% on all 35 correctly
+paired samples** across three corpora. The signal side is where it dies. Giving one cell its
+sibling's truth — 2,193 starts sharing only **117** addresses with the correct set — produces **0
+straddles over 2,188 walked pairs**. x86 decoding re-synchronises within a few bytes, so a walk that
+starts at a wrong address is back on the real instruction stream long before it travels the ~50
+bytes to the next label. Swapping every sample's truth for its neighbour's across a corpus, the
+boundary walk caught **0 mispairings the section-range test had not already caught**.
+
+The reason this is worth a log entry rather than a deleted branch: the second check has a *perfect*
+false-positive rate, and a check with no false positives and no discriminating power reports
+"checked, clean" on exactly the defect class it was added for. That is worse than not having it. A
+calibration that only measures the baseline will accept it.
