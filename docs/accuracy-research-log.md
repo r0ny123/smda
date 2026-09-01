@@ -4187,3 +4187,65 @@ from an image that merely packs tightly.
 **The rule for this backend from here on: any ARM64 PE boundary change is measured on both
 corpora.** One pads between functions and one does not, and a change that reads the gap between
 adjacent functions will behave in opposite ways on the two.
+
+## 2026-09-01 — the ARM64 PE chunk problem is closed, and the closing argument is one ratio
+
+The two entries above record a chunk-refusal rule and its refutation. This one closes the question,
+because the labelled corpus that refuted the rule also explains why no rule of that kind could have
+worked.
+
+### An exact label, for the first time
+
+A `.pdata` record that is not a function start in the PDB but falls inside a declared function's
+`[start, start + code size)` **is** a chunk. No inference. Across thirteen MSVC ARM64 images,
+66,865 records: **4,321 chunks**, about 6.5%.
+
+That killed the assumption the previous entries were built on. Chunks are not a peculiarity of
+PGO-split system binaries; they are ordinary MSVC ARM64 output, and they are everywhere.
+
+### Why the population is out of reach
+
+Of 3,473 chunks in the classified subset, the entry-shape gate already in
+`locatePeExceptionCandidates` refuses **2,829, or 81.5%**, before seeding. 644 survive.
+
+**643 of those 644 open with a genuine routine shape** — a recognised prologue, a BTI pad, a
+single-register `str Xt, [sp, #-imm]!`, or a bare `sub sp, sp, #imm`.
+
+The chunks that become false positives are the ones a compiler gave their own frame setup, so they
+are byte-for-byte what a function entry looks like. Shape cannot reach them: it is already applied,
+it already takes 81.5%, and the remainder is 643-to-1 against.
+
+### The predicate that scored 99.9% and changed nothing
+
+"Begin word is no routine shape, and the word before it neither ends a routine nor pads after one"
+fires 1,962 times across the corpus and is right 1,960 times — 99.90%. Implemented in the engine it
+produced **bit-identical output on both ARM64 PE corpora**.
+
+It re-derived the existing gate. Everything it can see is already refused, and the addresses that
+survive are outside its reach by construction. That is the most useful negative in this whole
+effort: a predicate's accuracy against a label says nothing about what it changes, if the thing it
+is accurate about is already handled.
+
+Two smaller corrections came out of chasing it, both of which had made an earlier version of the
+predicate look worse than it was: alignment padding (`nop`) in front of an address means the
+routine before it ended, and `is_function_prologue` does not recognise the single-register push
+that MSVC emits wherever the frame needs no pair.
+
+### One exact fact, kept
+
+A packed record (`UnwindData` flag 1) is **never** a chunk: 6,763 of them, zero. That confirms
+seeding them is correct; it is not an improvement available to take.
+
+### Everything measured, in one place
+
+| approach | verdict |
+|---|---|
+| record abuts the previous extent | 6.26% P(chunk); as a rule, −992 real functions and +130 false positives |
+| abuts + predecessor falls through | 18.23% P(chunk); net negative on both axes |
+| the parent's `.xdata` scope table | reaches 25 of 145 |
+| reference and branch vouching | the refuted rule itself |
+| no routine shape + predecessor does not end | 99.90% P(chunk), zero effect on output |
+
+The over-seeding stays: 78 addresses on the three system binaries, about 8 points of precision on
+that corpus. It is the price of a seeding source that is otherwise strictly good, and it is now a
+bounded, measured limitation rather than an open question.
