@@ -1288,3 +1288,65 @@ useful: it narrowed 139 changed addresses down to three worth opening.
 
 Nothing readable in those artifacts is a regression. The gate stays red because the set changed, and
 that is what it is built to report.
+
+## 25. Closed without a fix: ARM64 PE exception seeding books MSVC function chunks
+
+An MSVC-built ARM64 PE gives a separated chunk of a function its own `RUNTIME_FUNCTION` record, and
+the exception-directory seeding books it as a function start. On three ARM64 Windows system
+binaries that is 78 false starts, roughly 8 points of precision on that corpus.
+
+**This is closed as not separable, not fixed.** The record is worth keeping because the closing
+argument is a measurement rather than an opinion, and because two of the four rejected approaches
+looked convincing enough to reach a pull request.
+
+### What made it decidable
+
+Thirteen MSVC ARM64 images with **full private PDBs**, where `S_GPROC32` / `S_LPROC32` carries each
+function's start *and* extent. A `.pdata` record whose begin address is not a function start but
+falls inside a declared function's range **is** a chunk — labelled exactly, not inferred. 66,865
+records, **4,321 chunks**.
+
+The first thing that fell was the premise. Chunks are not a peculiarity of PGO-split system
+binaries, which is what the investigation had assumed while it had only three images to look at.
+They are ordinary MSVC ARM64 output at about 6.5% of records.
+
+### Why nothing can separate them
+
+Of 3,473 chunks in the classified subset, the entry-shape gate already in
+`locatePeExceptionCandidates` refuses **2,829 — 81.5%** — before seeding. 644 survive.
+
+**643 of those 644 open with a genuine routine shape**: a recognised prologue, a BTI pad, a
+single-register `str Xt, [sp, #-imm]!`, or a bare `sub sp, sp, #imm`.
+
+MSVC gives a separated chunk its own frame setup, so the chunks that actually become false positives
+are byte-for-byte what a function entry looks like. Shape is already applied, it already takes
+81.5%, and what remains is 643-to-1 against it. Reopening this needs evidence from outside the
+image's own bytes and unwind data, because every source inside them has now been measured.
+
+### The four approaches, and what each cost
+
+| approach | measured | verdict |
+|---|---|---|
+| record abuts the previous record's extent | 6.26% P(chunk) over 39,425 firings | reached a PR, cost 992 real functions and added 130 false positives |
+| abuts + the predecessor falls through | 18.23% P(chunk) | net negative on precision and recall at once |
+| the parent's `.xdata` scope table names its funclets | reaches 25 of 145 | would have addressed a sixth while reading as the complete answer |
+| begin word is no routine shape + predecessor neither ends nor pads | **99.90%** P(chunk), 1,960 of 1,962 | **bit-identical engine output** — it re-derives the gate that already exists |
+
+One exact fact is worth keeping from the wreckage: a packed record (`UnwindData` flag 1) is **never**
+a chunk — 6,763 of them, zero — so seeding them is right, and that is a confirmation rather than an
+opportunity.
+
+### Two method conclusions that generalise
+
+**A predicate's accuracy against a label says nothing about what it changes.** The last row above is
+99.90% correct and moves not one address, because everything it can see is already refused. Score
+the engine, not the predicate.
+
+**Oracle independence and sample diversity are different guarantees.** The abutting rule was
+validated against IDA labels and Microsoft's public PDBs — two oracles sharing no evidence — and
+both were computed over the same three images, so neither could see a layout-dependent rule fail on
+a different layout. The three system binaries pad between functions; these thirteen pack them back
+to back. Any ARM64 PE boundary change is measured on both corpora from here on.
+
+The corpus, the PDBs and the five probes behind every number above are committed alongside the other
+ground truth, so the closure can be re-derived rather than taken on trust.
