@@ -4120,3 +4120,70 @@ chunks `UNW_FLAG_CHAININFO` and the intel backend already refuses those and reco
 as fragments. ARM64 has no such bit. A clang/llvm-mingw ARM64 PE has no abutting records at all —
 it emits one record per function symbol and does not split them — so the whole population is MSVC
 codegen.
+
+## 2026-09-01 — the chunk rule above is wrong, and three binaries is why
+
+The entry immediately above reports a rule that removes ARM64 PE chunk seeds, with a precision
+gain on two oracles. A wider corpus refutes it. The rule is not landing, and the reason it looked
+right is the part worth keeping.
+
+### The corpus that was missing
+
+Six MSVC-built ARM64 PE binaries from the .NET `win-arm64` runtime, a NuGet package and so
+re-fetchable by version, with **full private PDBs** from the Microsoft symbol server —
+`S_GPROC32` / `S_LPROC32` records carrying each function's start *and* extent. That is a
+compiler's own boundaries rather than a disassembler's labels or a public-symbol subset, and it is
+**4,436 functions against the 840** the rule was built on.
+
+| | 3 system binaries (IDA truth) | 6 .NET binaries (PDB truth) |
+|---|---|---|
+| base | 96.905 TPR / 90.344 PPV | **96.731 / 89.939** |
+| with the rule | 95.595 / 96.053 | **74.369 / 84.395** |
+
+992 real functions lost and 130 false positives added. On `hostfxr.dll` recall goes 98.57 to
+56.72; the rule holds back 557 records, vouches 146 and refuses 411, and **all 411 are functions
+the PDB names**.
+
+### Why the predicate has no precision there
+
+"Begins exactly where the previous record's extent ends" is a statement about *layout*, not about
+what the record describes. `ping`/`robocopy`/`bcrypt` pad between functions, so abutting is rare
+and is mostly the chunk case. The .NET binaries pack functions back to back, so it fires on 50-70%
+of all records and is overwhelmingly right by accident. Marking a refused extent as a fragment's
+then makes the gap scan skip whole regions, which is where the added false positives come from.
+
+### Two independent oracles on one sample are still one sample
+
+The entry above leant on IDA labels and public PDBs agreeing, and called them independent because
+they share no evidence with each other. They do not — and it did not matter. Both were computed
+over the **same three images**, so neither could see a layout-dependent rule fail on a different
+layout. Oracle independence bounds one kind of error; sample diversity bounds another, and only
+the second one was ever in question here.
+
+### The refinement, measured and also rejected
+
+A chunk is fallen into and a real abutting function follows a routine that ends, so the terminator
+before the record should separate them. Over all nine binaries, of 2,853 abutting records: after a
+terminator, 1,678 real and 189 not; falling through, 272 real and 714 not. Refusing only the
+fall-through ones, vouchers still applied:
+
+| | 3 system binaries | 6 .NET binaries |
+|---|---|---|
+| base | 96.905 / 90.344 | 96.731 / 89.939 |
+| fall-through variant | 96.786 / **91.657** | 95.063 / 88.499 |
+
+Pooled over all 5,276 functions that is TP 5,105 → 5,030 and FP 567 → 622: worse on precision and
+recall at once. The signal is real — 90% of post-terminator abutting records are functions — and
+it is nowhere near clean enough to spend recall on.
+
+### What stands and what does not
+
+The evidence that the disputed addresses on those three system binaries are chunks stands: the
+public PDBs name 88.5% of what IDA calls functions and 6.4% of the disputed set. What does not
+stand is that a record's relationship to its predecessor's extent can find them. The over-seeding
+is specific to the layout of PGO-split MSVC system code, and nothing measured here separates it
+from an image that merely packs tightly.
+
+**The rule for this backend from here on: any ARM64 PE boundary change is measured on both
+corpora.** One pads between functions and one does not, and a change that reads the gap between
+adjacent functions will behave in opposite ways on the two.
