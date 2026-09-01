@@ -3994,3 +3994,129 @@ check was rejected above on *synthesised* mispairings, which was the weaker expe
 then. Against the genuine one — all sixteen binary-by-truth combinations of the four builds — it
 reports **zero straddles in every cell**, including the known-bad pairing. The rejection stands,
 and now rests on the case it was meant to catch rather than on a proxy for it.
+
+## 2026-08-30 — a baseline taken from the wrong checkout, and the numbers it published
+
+The alignment-padding rule below shipped with a measured gain on the Go corpus that did not exist.
+It is recorded first because the error is in the measurement rather than in any rule, and because
+it survived a review pass that was looking at the change rather than at where the numbers came
+from.
+
+The base-side dump had been taken from a second checkout that was several commits behind. Between
+that commit and the one the change was actually built on, an unrelated rule had already landed and
+had already produced most of the Go movement. Comparing the new head against the old dump credited
+that landed gain to the change under test. The corrected comparison has **Go completely flat — 0
+of 47 cells differ** — and the pooled precision gain drops from +1.66 to **+0.87**, with 2,676
+false positives removed rather than 5,348.
+
+Two things made it invisible. The direction was plausible, since the rule does fire on Go
+binaries; and the two other corpora in the same table were unaffected by the intervening commit,
+so they reconciled and looked like corroboration.
+
+**The check that catches it is mechanical.** A dump has to record the commit and the resolved
+module path of the engine that produced it, and a comparison has to refuse two dumps whose bases
+are not the same commit. The harness prints `smda.__file__` and asserts it is inside the tree it
+was pointed at, which catches the wrong *tree*; it did not catch the wrong *revision of the right
+kind of tree*, which is the cheaper mistake to make.
+
+A related one from the same day, cheaper to catch and worth naming: a worktree held an earlier
+variant of the rule in which the new predicate was defined but never called from the gate. The
+measurement ran, produced a coherent table, and described a different change. A predicate with no
+callers is what a coverage report shows immediately and what a results table never does.
+
+## 2026-08-30 — alignment padding is a boundary, and the shapes that cannot say so
+
+Inter-function padding was only ever treated as a boundary when the previous instruction was a
+`call`, on the theory that padding follows a function that ended in a `noreturn` call. GCC pads
+between functions whatever the previous one ended with, so those boundaries were swallowed into
+the predecessor.
+
+**Reading the whole padding run is what carries the rule.** A single filler encoding at an address
+says very little. The run has to reach the next 16-byte boundary *and stop there*: filler
+continuing past the boundary means the boundary sits in the middle of the run rather than at the
+entry it aligns. Of the addresses the whole-run test refuses that a bare "is on a boundary" test
+would have cut, **1,598 of 1,778 are not functions**, and on Go the split is 1,364 of 1,365.
+
+The stop-at-the-boundary condition was not in the first version and was caught by a control test
+rather than by a corpus — an existing case asserting that a landing pad off the boundary is still
+absorbed, which is unchanged either way and therefore reads the same on both sides. The version
+without the condition cut inside a padding run.
+
+**Prologue shape does not discriminate here, which is the finding worth transferring.** The
+obvious way to gate the cut is to require the address to look like a function entry, and on the
+fall-through path that is necessary. It is not sufficient and it is not *selective*: of 74
+disputed addresses, **67 have a real prologue**. What separated them was the format-independence
+of the gate, not the shape test inside it — padding reached by falling through carries no prior
+that the function ended, so the entry-shape requirement has to apply on every container rather
+than only on PE. Without that, five loop heads inside one unrolled string routine on a stripped
+ELF sample were booked as functions, 0x30 apart, each opening with `add rax, 4; mov cl, byte ptr
+[rax]`.
+
+The table of filler encodings also gained the CS-prefixed GCC/binutils forms (`2e 8d 74 26 00` and
+`2e 8d b4 26 00 00 00 00`), which the previous table did not carry.
+
+## 2026-09-01 — what a public PDB settles about the ARM64 unwind table, and two dead ends
+
+An earlier entry left ARM64 PE precision "measured against a convention rather than against ground
+truth": the exception directory seeds 78 starts that sit inside functions IDA labels, and there was
+no way to tell whether the table over-reports or IDA under-labels.
+
+**A third oracle settles it.** Microsoft publishes PDBs for these binaries, and they depend on
+neither IDA nor the images' own unwind tables. They name **88.5% of the addresses IDA calls
+functions** — that is the control, and it is what makes the other number mean anything — and
+**6.4% of the disputed 78**. A 14x gap. The disputed addresses are chunks of routines, not entries.
+
+Fetching them has one trap worth recording. The CodeView signature stores its first three fields
+little-endian and the symbol server wants them byte-swapped:
+`raw[0:4][::-1] + raw[4:6][::-1] + raw[6:8][::-1] + raw[8:16]`, uppercase hex, then the age.
+Getting it wrong returns a 404 that is indistinguishable from "no symbols published".
+
+### Dead end 1: the parent's scope table does not cover the population
+
+The natural exact test is the parent's `.xdata` handler data, which names its exception funclets.
+Of the 145 records that continue another record's extent and that the PDBs do not name, **only 25
+have a parent carrying handler data at all**. The other 120 continue a record with the X bit clear,
+or a packed record with no `.xdata` whatsoever — so they are not exception funclets, and nothing
+in the unwind data distinguishes them. A scope-table parser would have addressed about a sixth of
+the population while reading as the complete answer. An earlier version of this note asserted the
+opposite and was corrected by counting.
+
+### Dead end 2: declining to seed the chunk changes nothing
+
+The rule that works is "a record beginning exactly where the previous record's extent ends, that
+no other pass reaches, is a chunk". Implemented as a refusal to *seed* such an address, it moved
+the false-positive count by zero: **78 of the 86 refused addresses were booked again**, by the
+prologue scan or the gap scan, both of which read the chunk's own frame setup as an entry exactly
+as the directory pass had. Eleven real functions were lost for no precision at all.
+
+**The extent is what carries it.** A refused record's extent has to be recorded as a *fragment's*.
+Left as a primary extent whose function was never recovered, it says nothing about the addresses
+inside it — the gap scan walks into the chunk body and books there instead. With that, on
+ping/robocopy/bcrypt:
+
+| oracle | precision | recall |
+|---|---|---|
+| IDA labels | 90.344 → **96.053** | 96.905 → 95.595 |
+| public PDBs | 81.798 → **87.440** | 737 → 731 named starts |
+
+The two oracles share no evidence and agree on the trade at roughly ten false starts removed per
+real one lost.
+
+### The vouchers, and the one that had to be added
+
+The decision waits for the passes that could reach the address and takes their silence as the
+answer. The prologue scan is deliberately not among them, for the reason recorded above — it fires
+on these addresses as readily as on real entries and restores the whole set.
+
+A review bot found the gap: the call scan reads `BL` only, so an entry reached by a tailcall or a
+conditional edge and by nothing else goes unvouched. The population had to be counted before
+acting, because a cold chunk is *also* typically reached by a `b`/`b.cond` from its parent, and
+vouching on the edge could plausibly have restored everything. It does not: of the 86 refused
+records, **5 are the target of a direct branch anywhere in the image and all 5 are functions IDA
+labels**. Zero false positives among them.
+
+**x64 needed none of this**, which is the reason the defect was ARM64-only: MSVC marks its x64
+chunks `UNW_FLAG_CHAININFO` and the intel backend already refuses those and records their extents
+as fragments. ARM64 has no such bit. A clang/llvm-mingw ARM64 PE has no abutting records at all —
+it emits one record per function symbol and does not split them — so the whole population is MSVC
+codegen.
