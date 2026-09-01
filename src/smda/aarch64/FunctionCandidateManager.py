@@ -57,6 +57,7 @@ from .definitions import (
     RET_MASK,
     RET_VALUE,
     adrp_page_value,
+    direct_branch_target,
     is_bti_landing_pad,
     is_conditional_branch,
     is_exception_record_entry,
@@ -249,10 +250,10 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         and the compiler's own public symbols name almost none of them. What tells the two apart
         is not the record but the rest of the image: a chunk is reached by falling out of its
         predecessor and nothing else points at it, while an entry that merely happens to abut is
-        called, referenced or named like any other. So the decision waits for the symbol, call,
-        materialized-address and data-pointer passes and takes their silence as the answer.
-        The prologue scan is deliberately not among them: on the disputed addresses it fires as
-        readily as it does on real entries and would restore the whole set.
+        called, branched to, referenced or named like any other. So the decision waits for the
+        symbol, call, materialized-address and data-pointer passes and takes their silence as
+        the answer. The prologue scan is deliberately not among them: on the disputed addresses
+        it fires as readily as it does on real entries and would restore the whole set.
 
         A spent budget books all of them instead. Silence is only evidence once the scans that
         would have broken it have run, and under a timeout they have not.
@@ -263,14 +264,23 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         system binaries that put 76 starts back for the 86 refused, leaving the false-positive
         count where it started.
         """
+        if not self._pdata_deferred_starts:
+            return
         timed_out = self._candidateTimeoutTripped()
+        vouched = set()
+        if not timed_out:
+            branch_reached = self._branchReachedDeferredStarts()
+            if branch_reached is None:
+                timed_out = True
+            else:
+                vouched = set(self.candidates) | branch_reached
         for addr in sorted(self._pdata_deferred_starts):
-            if timed_out or addr in self.candidates:
+            if timed_out or addr in vouched:
                 self.addExceptionCandidate(addr)
         if timed_out:
             self._pdata_deferred_starts = set()
             return
-        self._pdata_deferred_starts -= set(self.candidates)
+        self._pdata_deferred_starts -= vouched
         if not self._pdata_deferred_starts:
             return
         self._pdata_ranges = [
@@ -278,6 +288,25 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
             for start, end, fragment in self._pdata_ranges
         ]
         self._pdata_range_starts = None
+
+    def _branchReachedDeferredStarts(self):
+        """Held-back starts that a direct branch elsewhere in the image targets, or None on a
+        spent budget.
+
+        The call scan reads BL only, so a function entered by a tailcall or a conditional edge
+        and by nothing else would go unvouched, and refusing it would hand its body to the
+        routine before it. On the ARM64 system binaries 5 of the 86 refused records are branch
+        targets and all 5 are functions IDA labels, so the edge separates cleanly here.
+        """
+        base = self.disassembly.binary_info.base_addr
+        reached = set()
+        for index, word in enumerate(self._wordsView()):
+            if index % _TIMEOUT_POLL_INTERVAL == 0 and self._candidateTimeoutTripped():
+                return None
+            target = direct_branch_target(word, base + index * INSTRUCTION_SIZE)
+            if target in self._pdata_deferred_starts:
+                reached.add(target)
+        return reached
 
     def isRefusedPdataChunk(self, addr):
         """Whether the exception directory's own extents place `addr` inside the routine before it.

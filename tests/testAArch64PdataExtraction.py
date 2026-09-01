@@ -14,6 +14,7 @@ unwind data (primary), 2 = packed fragment, 3 = reserved.
 import struct
 import unittest
 
+from smda.aarch64.definitions import direct_branch_target
 from smda.aarch64.FunctionCandidateManager import FunctionCandidateManager
 from smda.Disassembler import Disassembler
 from smda.DisassemblyResult import DisassemblyResult
@@ -530,6 +531,15 @@ class AArch64PdataAbuttingRecordTestSuite(unittest.TestCase):
         text[source_rva - TEXT_RVA : source_rva - TEXT_RVA + 4] = struct.pack("<I", 0x94000000 | (offset & 0x03FFFFFF))
         return bytes(text)
 
+    @classmethod
+    def _text_with_branch_to(cls, target_rva, source_rva, encoding):
+        text = bytearray(struct.pack("<II", 0xA9BF7BFD, 0xD65F03C0) * 64)
+        offset = (target_rva - source_rva) // 4
+        immediate = offset & 0x03FFFFFF if encoding == 0x14000000 else (offset & 0x7FFFF) << 5
+        word = encoding | immediate
+        text[source_rva - TEXT_RVA : source_rva - TEXT_RVA + 4] = struct.pack("<I", word)
+        return bytes(text)
+
     def _candidates(self, text_bytes=None, **config_overrides):
         records = self.FIRST + _record(self.ABUTTING_RVA, (0x8 << 2) | 1)
         blob = _build_arm64_pe(records, text_bytes=text_bytes)
@@ -552,6 +562,14 @@ class AArch64PdataAbuttingRecordTestSuite(unittest.TestCase):
     def test_a_called_abutting_record_is_seeded(self):
         fcm = self._candidates(text_bytes=self._text_with_call_to(self.ABUTTING_RVA, self.BL_RVA))
         self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
+    def test_a_branched_to_abutting_record_is_seeded(self):
+        # the call scan reads BL only, so an entry reached by a tailcall or a conditional edge
+        # and by nothing else would go unvouched and lose its body to the routine before it
+        for encoding in (0x14000000, 0x54000000, 0x34000000):
+            with self.subTest(encoding=hex(encoding)):
+                fcm = self._candidates(text_bytes=self._text_with_branch_to(self.ABUTTING_RVA, self.BL_RVA, encoding))
+                self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
 
     def test_the_flag_restores_the_unreferenced_record(self):
         fcm = self._candidates(USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES=True)
@@ -599,8 +617,38 @@ class AArch64PdataAbuttingRecordTestSuite(unittest.TestCase):
         fcm.promoteDeferredPdataCandidates()
         self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
 
+    def test_a_budget_spent_during_the_branch_scan_books_them_anyway(self):
+        fcm = self._candidates()
+        self.assertNotIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+        fcm._pdata_deferred_starts = {IMAGE_BASE + self.ABUTTING_RVA}
+        checks = []
+        fcm._candidateTimeoutTripped = lambda: bool(checks.append(1)) or len(checks) > 1
+        fcm.promoteDeferredPdataCandidates()
+        self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
     def test_the_default_refuses_them(self):
         self.assertFalse(SmdaConfig().USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES)
+
+
+class AArch64DirectBranchTargetTestSuite(unittest.TestCase):
+    def test_every_direct_branch_form_resolves(self):
+        for word, expected in (
+            (0x14000004, 0x1010),  # b   #+16
+            (0x17FFFFFC, 0x0FF0),  # b   #-16
+            (0x54000080, 0x1010),  # b.eq #+16
+            (0x54FFFF81, 0x0FF0),  # b.ne #-16
+            (0x34000080, 0x1010),  # cbz x0, #+16
+            (0x36000080, 0x1010),  # tbz x0, #0, #+16
+        ):
+            with self.subTest(word=hex(word)):
+                self.assertEqual(direct_branch_target(word, 0x1000), expected)
+
+    def test_a_call_is_not_a_branch(self):
+        # BL targets are reference candidates already, and a call is not a branch
+        self.assertIsNone(direct_branch_target(0x94000004, 0x1000))
+
+    def test_a_non_branch_word_resolves_to_nothing(self):
+        self.assertIsNone(direct_branch_target(0xA9BF7BFD, 0x1000))
 
 
 class AArch64DeferralAlwaysDecidedTestSuite(unittest.TestCase):

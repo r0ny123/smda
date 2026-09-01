@@ -152,6 +152,25 @@ def rn_field(word):
     return (word >> 5) & 0x1F
 
 
+def direct_branch_target(word, addr):
+    """Absolute target of the direct, PC-relative branch encoded by `word` at `addr`, or None.
+
+    Covers b, b.<cond>/bc.<cond>, cbz/cbnz and tbz/tbnz. BL is deliberately not among them:
+    a call is not a branch, and call targets are reference candidates already.
+    """
+    if (word & B_MASK) == B_VALUE:
+        immediate, bits = word & BL_IMM_MASK, 26
+    elif (word & BCOND_MASK) == BCOND_VALUE or (word & CBZ_CBNZ_MASK) == CBZ_CBNZ_VALUE:
+        immediate, bits = (word >> 5) & 0x7FFFF, 19
+    elif (word & TBZ_TBNZ_MASK) == TBZ_TBNZ_VALUE:
+        immediate, bits = (word >> 5) & 0x3FFF, 14
+    else:
+        return None
+    if immediate & (1 << (bits - 1)):
+        immediate -= 1 << bits
+    return addr + immediate * INSTRUCTION_SIZE
+
+
 def is_conditional_branch(word):
     """True for cbz/cbnz, tbz/tbnz, b.<cond> and FEAT_HBC's bc.<cond>
     (compare/test/condition branches, hinted or not).

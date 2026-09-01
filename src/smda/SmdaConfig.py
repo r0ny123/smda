@@ -60,14 +60,15 @@ class SmdaConfig:
     # data names its exception funclets, but only 25 of the 145 chunks here have a parent carrying
     # any, the other 120 continuing a record with the X bit clear or no .xdata at all -- so the
     # test is the rest of the image instead: a chunk is fallen into and pointed at by nothing,
-    # while an entry that merely abuts is called, referenced or named like any other. The decision
-    # therefore waits until the passes that could reach it have run, and a record still refused
-    # then has its extent recorded as a fragment's, since that is what it turns out to describe.
-    # Measured over the three images, against their IDA labels: precision 90.344 to 95.923 and
-    # recall 96.905 to 95.238, 53 false positives removed for 14 real functions lost. Against the
-    # public PDBs, which depend on neither IDA nor the unwind tables: precision 81.798 to 87.290,
-    # 58 starts the PDBs do not name removed for 9 they do -- the same 6:1 trade, from an oracle
-    # that shares no evidence with the one the rule is built on.
+    # while an entry that merely abuts is called, branched to, referenced or named like any other.
+    # The decision therefore waits until the passes that could reach it have run, and a record
+    # still refused then has its extent recorded as a fragment's, since that is what it turns out
+    # to describe.
+    # Measured over the three images, against their IDA labels: precision 90.344 to 96.053 and
+    # recall 96.905 to 95.595, 54 false positives removed for 11 real functions lost. Against the
+    # public PDBs, which depend on neither IDA nor the unwind tables: precision 81.798 to 87.440,
+    # 59 starts the PDBs do not name removed for 6 they do -- the same trade, from an oracle that
+    # shares no evidence with the one the rule is built on.
     # Splitting a routine also changes the parent's PicHash and OpcHash, so refusing the chunks is
     # what keeps those the hashes of a whole function. clang/llvm-mingw emits one record per
     # function symbol and does not split them, so a from-source ARM64 PE has no abutting records
