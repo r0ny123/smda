@@ -116,6 +116,7 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         # reaches init(), and the reference scan writes to them from its first call
         self._call_targets = set()
         self._metadata_candidates = set()
+        self._pdata_deferred_starts = set()
 
     def init(self, disassembly, cbAnalysisTimeout=None):
         # Reset the memoized executable-section ranges, the Mach-O fixup state and the
@@ -126,6 +127,7 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         self._macho_fixup_state = None
         self._call_targets = set()
         self._metadata_candidates = set()
+        self._pdata_deferred_starts = set()
         super().init(disassembly, cbAnalysisTimeout)
 
     def hasCommonPrologue(self, addr):
@@ -143,19 +145,26 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         if self._candidateTimeoutTripped():
             return
         self.locatePeExceptionCandidates()
-        if self._candidateTimeoutTripped():
-            return
-        # what the coverage test below compares its call targets against: everything the image
-        # says about itself, which is not the same set as what has been booked by now
-        self._metadata_candidates = set(self.candidates) | self._languageMetadataStarts()
-        self.locateReferenceCandidates()
-        if self._candidateTimeoutTripped():
-            return
-        if not self._metadataNamedTheCallTargets():
-            self.locateAddressRefCandidates()
-        if self._candidateTimeoutTripped():
-            return
-        self.locateDataPointerCandidates()
+        # every exit from here has to reach the promotion in the finally, or a timeout drops
+        # what the exception pass held back for these scans to vouch for
+        try:
+            if self._candidateTimeoutTripped():
+                return
+            # what the coverage test below compares its call targets against: everything the
+            # image says about itself, which is not the same set as what has been booked by now
+            self._metadata_candidates = (
+                set(self.candidates) | self._pdata_deferred_starts | self._languageMetadataStarts()
+            )
+            self.locateReferenceCandidates()
+            if self._candidateTimeoutTripped():
+                return
+            if not self._metadataNamedTheCallTargets():
+                self.locateAddressRefCandidates()
+            if self._candidateTimeoutTripped():
+                return
+            self.locateDataPointerCandidates()
+        finally:
+            self.promoteDeferredPdataCandidates()
         if self._candidateTimeoutTripped():
             return
         self.locatePrologueCandidates()
@@ -215,6 +224,75 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         version = (header_word >> 18) & 0x3
         return version == 0 and function_length > 0
 
+    def _arm64RecordLength(self, unwind_data, flag):
+        """Bytes the RUNTIME_FUNCTION covers, or None when the record is not a valid one.
+
+        An ARM64 RUNTIME_FUNCTION carries no EndAddress, unlike its x64 counterpart. A packed
+        record spells the length in bits 2-12 of UnwindData; a full record puts it in bits 0-17
+        of the .xdata header, the same word that says whether the record is valid at all -- so
+        an unreadable or malformed header is None here rather than a length of zero. Both counts
+        are in instructions, so both scale by the word size.
+        """
+        if flag != 0:
+            return ((unwind_data >> 2) & 0x7FF) * INSTRUCTION_SIZE
+        header_word = self._arm64UnwindHeaderWord(unwind_data)
+        if header_word is None or not self._isValidArm64UnwindHeader(header_word):
+            return None
+        return (header_word & 0x3FFFF) * INSTRUCTION_SIZE
+
+    def promoteDeferredPdataCandidates(self):
+        """Book the exception records held back at seeding that another pass has since reached.
+
+        A record beginning exactly where the previous record's extent ends continues that
+        routine's bytes rather than following a gap after it. MSVC gives such a separated chunk
+        its own record and the chunk sets up its own frame, so it reads as an entry by shape,
+        and the compiler's own public symbols name almost none of them. What tells the two apart
+        is not the record but the rest of the image: a chunk is reached by falling out of its
+        predecessor and nothing else points at it, while an entry that merely happens to abut is
+        called, referenced or named like any other. So the decision waits for the symbol, call,
+        materialized-address and data-pointer passes and takes their silence as the answer.
+        The prologue scan is deliberately not among them: on the disputed addresses it fires as
+        readily as it does on real entries and would restore the whole set.
+
+        A spent budget books all of them instead. Silence is only evidence once the scans that
+        would have broken it have run, and under a timeout they have not.
+
+        What stays refused has its extent recorded as a fragment's. Left as a primary extent
+        whose function was never recovered it would say nothing about the addresses inside it,
+        and the gap scan would walk into the chunk body and book there instead: on the ARM64
+        system binaries that put 76 starts back for the 86 refused, leaving the false-positive
+        count where it started.
+        """
+        timed_out = self._candidateTimeoutTripped()
+        for addr in sorted(self._pdata_deferred_starts):
+            if timed_out or addr in self.candidates:
+                self.addExceptionCandidate(addr)
+        if timed_out:
+            self._pdata_deferred_starts = set()
+            return
+        self._pdata_deferred_starts -= set(self.candidates)
+        if not self._pdata_deferred_starts:
+            return
+        self._pdata_ranges = [
+            (start, end, fragment or start in self._pdata_deferred_starts)
+            for start, end, fragment in self._pdata_ranges
+        ]
+        self._pdata_range_starts = None
+
+    def isRefusedPdataChunk(self, addr):
+        """Whether the exception directory's own extents place `addr` inside the routine before it.
+
+        Only meaningful once promoteDeferredPdataCandidates has run: until then the set still
+        holds the addresses that pass is about to vouch for.
+
+        The prologue scan asks this the way it already asks about a declared landing pad, and
+        for the same reason: declining to seed such an address is not enough on its own, because
+        the chunk's own frame setup reads as an entry to that scan exactly as it did to the
+        directory pass. The gap scan needs no test of its own -- refusing a record turns its
+        extent into a fragment extent, which that scan already refuses whole.
+        """
+        return addr in self._pdata_deferred_starts
+
     def locatePeExceptionCandidates(self):
         # PE ARM64 exception directory: every RUNTIME_FUNCTION record names a
         # guaranteed function (or fragment) start, so accepted entries go through
@@ -249,6 +327,9 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         exec_ranges = self._peExecutableSectionRanges(lief_binary, base_addr)
         if not exec_ranges:
             return
+        # the directory is sorted by BeginAddress, so a record ending where a later one begins
+        # is already in here by the time that one is read
+        extent_ends = set()
         # 8-byte records: <BeginRVA, UnwindData>; UnwindData bits 0-1 select the format
         for record_index, record_rva in enumerate(
             range(exception_dir.rva, exception_dir.rva + exception_dir.size - 7, 8)
@@ -269,23 +350,17 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
             addr = base_addr + begin_rva
             if not any(start <= addr < end for start, end in exec_ranges):
                 continue
-            # An ARM64 RUNTIME_FUNCTION carries no EndAddress, unlike its x64 counterpart. A
-            # packed record spells the length in bits 2-12 of UnwindData; a full record puts
-            # it in bits 0-17 of the .xdata header, the same word that says whether the record
-            # is valid at all. Both count instructions, so both scale by the word size.
-            if flag == 0:
-                header_word = self._arm64UnwindHeaderWord(unwind_data)
-                if header_word is None or not self._isValidArm64UnwindHeader(header_word):
-                    continue
-                length = (header_word & 0x3FFFF) * INSTRUCTION_SIZE
-            else:
-                length = ((unwind_data >> 2) & 0x7FF) * INSTRUCTION_SIZE
+            length = self._arm64RecordLength(unwind_data, flag)
+            if length is None:
+                continue
+            abuts_previous = addr in extent_ends
             # the extent is recorded for every accepted record, fragments included: what the
             # unwinder names is the bytes belonging to a routine, and that is as true of a
             # fragment as of a whole function
             if length:
                 self._pdata_ranges.append((addr, addr + length, flag == 2))
                 self._pdata_range_starts = None
+                extent_ends.add(addr + length)
             if flag == 2:
                 # a packed fragment of another function's body: its begin word continues that
                 # function rather than starting one, so it names no candidate
@@ -300,6 +375,9 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                 continue
             begin_word = int.from_bytes(begin_word_bytes, "little")
             if not is_exception_record_entry(begin_word):
+                continue
+            if abuts_previous and not self.config.USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES:
+                self._pdata_deferred_starts.add(addr)
                 continue
             self.addExceptionCandidate(addr)
 
@@ -390,6 +468,8 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         if not table_count:
             return
         LOGGER.debug("carved %d ARM64 RUNTIME_FUNCTION entries at 0x%08x", table_count, table_offset)
+        # no abutting test here: the passes whose silence that test reads -- symbols above all --
+        # are the ones a dumped image is least likely to still carry
         for index in range(table_count):
             if index and index % _TIMEOUT_POLL_INTERVAL == 0 and self._candidateTimeoutTripped():
                 return
@@ -849,6 +929,8 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
                     # pad in front of this loop.
                     continue
                 if is_bti_landing_pad(word) and self._isLikelyInteriorBtiCandidate(addr, word):
+                    continue
+                if self.isRefusedPdataChunk(addr):
                     continue
                 if not self._passesCodeFilter(addr):
                     continue

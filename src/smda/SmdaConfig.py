@@ -47,19 +47,35 @@ class SmdaConfig:
     # system binaries (wermgr/ping/robocopy/bcrypt) show equal-or-better boundary accuracy
     # with the directory enabled, so it is on by default.
     #
-    # What survives seeding is not only whole functions. An MSVC-built image gives a separated
-    # chunk of a routine its own record, and the chunk sets up its own frame, so the entry-shape
-    # filter reads it as an entry: on ping/robocopy/bcrypt that is 78 seeded starts inside a
-    # function IDA labels, 73 beginning exactly where another record's extent ends with nothing
-    # referencing them. Microsoft's own public PDBs name 88.5% of the addresses IDA calls
-    # functions but only 6.4% of those 78, so they are chunks rather than entries and this seeding
-    # over-reports on such images. Refusing them by that shape costs 13 addresses the PDBs do name,
-    # and no exact test is in reach: the parent's .xdata handler data names its exception funclets,
-    # but only 25 of the 145 chunks here have a parent carrying any -- the other 120 continue a
-    # record with the X bit clear or no .xdata at all, so they are not exception funclets and
-    # nothing in the unwind data distinguishes them. clang/llvm-mingw emits one record per function
-    # symbol and does not split them, so a from-source ARM64 PE is unaffected either way.
+    # What survives seeding is not only whole functions; see USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES.
     USE_PE_ARM64_PDATA_CANDIDATES = True
+    # Seed a record that begins exactly where the previous record's extent ends and that no other
+    # pass reaches. An MSVC-built image gives a separated chunk of a routine its own record, and
+    # the chunk sets up its own frame, so the entry-shape filter reads it as an entry: on
+    # ping/robocopy/bcrypt that is 78 seeded starts inside a function IDA labels, most of them
+    # beginning exactly where another record's extent ends with nothing referencing them.
+    # Microsoft's own public PDBs name 88.5% of the addresses IDA calls functions but only 6.4% of
+    # those 78, a 14x gap: they are chunks rather than entries, and seeding one splits the routine
+    # it continues. Nothing in the unwind data separates the two -- the parent's .xdata handler
+    # data names its exception funclets, but only 25 of the 145 chunks here have a parent carrying
+    # any, the other 120 continuing a record with the X bit clear or no .xdata at all -- so the
+    # test is the rest of the image instead: a chunk is fallen into and pointed at by nothing,
+    # while an entry that merely abuts is called, referenced or named like any other. The decision
+    # therefore waits until the passes that could reach it have run, and a record still refused
+    # then has its extent recorded as a fragment's, since that is what it turns out to describe.
+    # Measured over the three images, against their IDA labels: precision 90.344 to 95.923 and
+    # recall 96.905 to 95.238, 53 false positives removed for 14 real functions lost. Against the
+    # public PDBs, which depend on neither IDA nor the unwind tables: precision 81.798 to 87.290,
+    # 58 starts the PDBs do not name removed for 9 they do -- the same 6:1 trade, from an oracle
+    # that shares no evidence with the one the rule is built on.
+    # Splitting a routine also changes the parent's PicHash and OpcHash, so refusing the chunks is
+    # what keeps those the hashes of a whole function. clang/llvm-mingw emits one record per
+    # function symbol and does not split them, so a from-source ARM64 PE has no abutting records
+    # and is unaffected either way. The test is applied to the parsed exception directory only: a
+    # headerless memory image reaches the same records through the carving path, but there the
+    # passes whose silence the test reads -- symbols above all -- are the ones such an image is
+    # least likely to still carry.
+    USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES = False
     # do not read `bti j` as a function entry on AArch64. The four BTI forms are not
     # interchangeable: J permits a target reached by `br` - an indirect jump, which is what a
     # switch dispatch does to a case block - while C permits one reached by `blr`, which is how

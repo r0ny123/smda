@@ -508,5 +508,143 @@ class AArch64PdataInteriorGapTestSuite(unittest.TestCase):
         self.assertIn(IMAGE_BASE + TEXT_RVA + 0x0C, starts)
 
 
+class AArch64PdataAbuttingRecordTestSuite(unittest.TestCase):
+    """A record beginning exactly where the previous one ends continues that routine.
+
+    MSVC gives a separated chunk of a function its own record and the chunk sets up its own
+    frame, so the begin-word shape test cannot tell it from an entry. What can is whether
+    anything else in the image reaches the address, which is only known once the passes that
+    could have reached it have run.
+    """
+
+    # first record: .xdata FunctionLength 0x10 words, so its extent ends at TEXT_RVA + 0x40
+    FIRST = _record(TEXT_RVA, XDATA_RVA)
+    ABUTTING_RVA = TEXT_RVA + 0x40
+    # a BL sits at an odd word index so the even ones stay entry-shaped for the begin-word test
+    BL_RVA = TEXT_RVA + 0x104
+
+    @staticmethod
+    def _text_with_call_to(target_rva, source_rva):
+        text = bytearray(struct.pack("<II", 0xA9BF7BFD, 0xD65F03C0) * 64)
+        offset = (target_rva - source_rva) // 4
+        text[source_rva - TEXT_RVA : source_rva - TEXT_RVA + 4] = struct.pack("<I", 0x94000000 | (offset & 0x03FFFFFF))
+        return bytes(text)
+
+    def _candidates(self, text_bytes=None, **config_overrides):
+        records = self.FIRST + _record(self.ABUTTING_RVA, (0x8 << 2) | 1)
+        blob = _build_arm64_pe(records, text_bytes=text_bytes)
+        loader = FileLoader("/", map_file=True)
+        loader._loadFile(blob)
+        disassembly = DisassemblyResult()
+        disassembly.binary_info = Disassembler()._populateBinaryInfo(loader)
+        config = SmdaConfig()
+        for name, value in config_overrides.items():
+            setattr(config, name, value)
+        fcm = FunctionCandidateManager(config)
+        fcm.init(disassembly, None)
+        return fcm
+
+    def test_an_unreferenced_abutting_record_is_not_seeded(self):
+        fcm = self._candidates()
+        self.assertIn(IMAGE_BASE + TEXT_RVA, _exception_candidates(fcm))
+        self.assertNotIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
+    def test_a_called_abutting_record_is_seeded(self):
+        fcm = self._candidates(text_bytes=self._text_with_call_to(self.ABUTTING_RVA, self.BL_RVA))
+        self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
+    def test_the_flag_restores_the_unreferenced_record(self):
+        fcm = self._candidates(USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES=True)
+        self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
+    def test_a_record_after_a_gap_is_seeded(self):
+        records = self.FIRST + _record(TEXT_RVA + 0x48, (0x8 << 2) | 1)
+        fcm = _candidates_for(_build_arm64_pe(records))
+        self.assertIn(IMAGE_BASE + TEXT_RVA + 0x48, _exception_candidates(fcm))
+
+    def test_a_fragment_extent_also_makes_the_next_record_abut(self):
+        records = (
+            self.FIRST + _record(self.ABUTTING_RVA, (0x8 << 2) | 2) + _record(self.ABUTTING_RVA + 0x20, (0x8 << 2) | 1)
+        )
+        fcm = _candidates_for(_build_arm64_pe(records))
+        self.assertNotIn(IMAGE_BASE + self.ABUTTING_RVA + 0x20, _exception_candidates(fcm))
+
+    def test_the_deferred_record_still_counts_as_image_metadata(self):
+        # the coverage test asks what the image says about itself, and it does say this address
+        fcm = self._candidates()
+        self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, fcm._metadata_candidates)
+
+    def test_a_refused_record_declares_its_extent_a_fragment(self):
+        fcm = self._candidates()
+        self.assertEqual(
+            fcm.declaredExceptionRangeContaining(IMAGE_BASE + self.ABUTTING_RVA),
+            (IMAGE_BASE + self.ABUTTING_RVA, IMAGE_BASE + self.ABUTTING_RVA + 0x20, True),
+        )
+
+    def test_a_vouched_record_keeps_a_primary_extent(self):
+        fcm = self._candidates(text_bytes=self._text_with_call_to(self.ABUTTING_RVA, self.BL_RVA))
+        self.assertIsNone(fcm.declaredExceptionRangeContaining(IMAGE_BASE + self.ABUTTING_RVA))
+
+    def test_the_prologue_scan_does_not_book_a_refused_record(self):
+        # the begin word is a frame setup, so this scan reads it as an entry just as the
+        # directory pass did; without the refusal it only changes which pass books it
+        fcm = self._candidates()
+        self.assertNotIn(IMAGE_BASE + self.ABUTTING_RVA, fcm.candidates)
+
+    def test_a_spent_budget_books_them_anyway(self):
+        fcm = self._candidates()
+        self.assertNotIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+        fcm._pdata_deferred_starts = {IMAGE_BASE + self.ABUTTING_RVA}
+        fcm._candidateTimeoutTripped = lambda: True
+        fcm.promoteDeferredPdataCandidates()
+        self.assertIn(IMAGE_BASE + self.ABUTTING_RVA, _exception_candidates(fcm))
+
+    def test_the_default_refuses_them(self):
+        self.assertFalse(SmdaConfig().USE_PE_ARM64_PDATA_ABUTTING_CANDIDATES)
+
+
+class AArch64DeferralAlwaysDecidedTestSuite(unittest.TestCase):
+    """Every exit from candidate discovery past the exception pass has to decide the deferrals.
+
+    A timeout that returned without doing so would leave the records the exception pass held
+    back refused on the strength of scans that never ran.
+    """
+
+    PASSES = (
+        "locateSymbolCandidates",
+        "locatePeExceptionCandidates",
+        "locateReferenceCandidates",
+        "locateAddressRefCandidates",
+        "locateDataPointerCandidates",
+        "locatePrologueCandidates",
+        "locateLangSpecCandidates",
+    )
+
+    def _manager(self, trip_after):
+        fcm = FunctionCandidateManager(SmdaConfig())
+        checks = []
+        promotions = []
+        fcm._candidateTimeoutTripped = lambda: checks.append(1) or len(checks) > trip_after
+        for name in self.PASSES:
+            setattr(fcm, name, lambda: None)
+        fcm._languageMetadataStarts = set
+        fcm._metadataNamedTheCallTargets = lambda: True
+        fcm._identifyAlignment = lambda: 0
+        fcm.promoteDeferredPdataCandidates = lambda: promotions.append(1)
+        return fcm, promotions
+
+    def test_a_timeout_at_any_point_after_the_exception_pass_still_decides(self):
+        for trip_after in range(1, 6):
+            with self.subTest(trip_after=trip_after):
+                fcm, promotions = self._manager(trip_after)
+                fcm.locateCandidates()
+                self.assertEqual(len(promotions), 1)
+
+    def test_a_timeout_before_the_exception_pass_has_nothing_to_decide(self):
+        fcm, promotions = self._manager(0)
+        fcm.locateCandidates()
+        self.assertEqual(promotions, [])
+
+
 if __name__ == "__main__":
     unittest.main()
