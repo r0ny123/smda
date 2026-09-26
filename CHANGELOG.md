@@ -77,7 +77,8 @@ past roughly six lines it belongs in the PR the entry links.
   needed to get a PE/ELF/Mach-O/Delphi-KB/DEX file mapped and its symbols parsed. Routing is decided
   by `shouldParseHeader()`, which asks every loader in `FileLoader.file_loaders` whether it claims
   the bytes -- the same list `FileLoader` dispatches on, not a second copy of the magic. An explicit
-  `-a/--base_addr` or `-i/--oep` still selects raw buffer mode, because a dump of a mapped image
+  `-a/--base_addr` or `-i/--oep`, or a `_0x<addr>` base address in the file name, still selects raw
+  buffer mode, because a dump of a mapped image
   begins with the header it was mapped from and the caller naming its base address is describing
   exactly that; `-p` keeps working and overrides both. DEX is unchanged in output: routed through
   `disassembleFile` the `blockblast` fixture yields the same 2,219 functions / 2,527 blocks / 9,824
