@@ -5,10 +5,14 @@ are covered here: reading the callgrind total and the base/PR comparison.
 """
 
 import importlib.util
+import io
+import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _SCRIPT = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "scripts" / "count_instructions.py"
 _spec = importlib.util.spec_from_file_location("count_instructions", _SCRIPT)
@@ -100,11 +104,34 @@ class CompareTest(unittest.TestCase):
         _, failed = count_instructions.compare(base, pr, 0.01, 0.02, min_absolute=5_000_000)
         self.assertTrue(failed)
 
+    def test_title_names_the_table(self):
+        base = _result(1000, asprox=10_000)
+        markdown, _ = count_instructions.compare(base, base, 0.01, 0.02, title="Drift since v5.0.1")
+        self.assertTrue(markdown.startswith("## Drift since v5.0.1\n"))
+
     def test_small_growth_on_every_fixture_fails_the_total(self):
         base = _result(1000, a=10_000, b=10_000)
         pr = _result(1000, a=10_150, b=10_150)
         markdown, _ = count_instructions.compare(base, pr, threshold_warn=0.0, threshold_fail=0.01)
         self.assertIn("| TOTAL | 20,000 | 20,300 | +1.50% | FAIL |", markdown)
+
+
+class MainTest(unittest.TestCase):
+    def test_no_gate_reports_a_failure_but_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_path, pr_path = os.path.join(tmp, "base.json"), os.path.join(tmp, "pr.json")
+            with open(base_path, "w") as f:
+                json.dump(_result(1000, asprox=100_000_000), f)
+            with open(pr_path, "w") as f:
+                json.dump(_result(1000, asprox=200_000_000), f)
+            argv = ["count_instructions.py", "compare", pr_path, base_path]
+            # keep the table out of the CI run's own step summary
+            self.enterContext(mock.patch.dict(os.environ))
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            with mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(count_instructions.main(), 1)
+            with mock.patch.object(sys, "argv", [*argv, "--no-gate"]), mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(count_instructions.main(), 0)
 
 
 if __name__ == "__main__":

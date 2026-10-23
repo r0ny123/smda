@@ -163,6 +163,27 @@ jobs:
           path: base-repo
           persist-credentials: false
 
+      # Each run compares against its parent only, so many small slowdowns that each
+      # pass the gate add up unseen. On master, the job also measures the latest
+      # release tag and reports the drift since then, without gating on it.
+      - name: Find the latest release tag
+        id: release
+        if: github.event_name != 'pull_request'
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          tag="$(git ls-remote --tags --refs --sort=-v:refname "https://github.com/${REPOSITORY}.git" 'v*' \
+            | head -n 1 | sed 's|.*refs/tags/||')"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout latest release
+        if: steps.release.outputs.tag != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          path: release-repo
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -195,6 +216,19 @@ jobs:
         run: |
           python .github/workflows/scripts/count_instructions.py compare \
             instruction_counts/pr/results.json instruction_counts/base/results.json
+
+      - name: Drift since the latest release
+        if: steps.release.outputs.tag != ''
+        # an old release may predate the profiling toolkit this measures through
+        continue-on-error: true
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python .github/workflows/scripts/count_instructions.py measure release-repo --output instruction_counts/release/results.json
+          python .github/workflows/scripts/count_instructions.py compare \
+            instruction_counts/pr/results.json instruction_counts/release/results.json \
+            --title "Drift since ${TAG}" --no-gate
 
       - name: Upload callgrind outputs
         if: always()

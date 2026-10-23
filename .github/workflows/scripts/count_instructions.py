@@ -121,7 +121,7 @@ def measure(tree, targets, out_dir, jobs):
     return {"python": sys.version.split()[0], "import": baseline, "fixtures": fixtures}
 
 
-def compare(base, pr, threshold_warn, threshold_fail, min_absolute=0):
+def compare(base, pr, threshold_warn, threshold_fail, min_absolute=0, title="Instruction counts (callgrind)"):
     """Return (markdown, failed) for a base and a PR result.
 
     A row other than TOTAL also has to grow by `min_absolute` instructions before its
@@ -143,7 +143,7 @@ def compare(base, pr, threshold_warn, threshold_fail, min_absolute=0):
     rows.append((TOTAL_ROW, base_sum, pr_sum))
 
     lines = [
-        "## Instruction counts (callgrind)",
+        f"## {title}",
         "",
         "Fixture rows are net of the import baseline; TOTAL sums the fixtures present on both sides.",
         "",
@@ -194,6 +194,8 @@ def main():
         default=5_000_000,
         help="instructions a row other than TOTAL must also grow by before its percentage counts",
     )
+    p_compare.add_argument("--title", default="Instruction counts (callgrind)", help="heading of the table")
+    p_compare.add_argument("--no-gate", action="store_true", help="report only; always exit 0")
 
     args = parser.parse_args()
 
@@ -209,13 +211,13 @@ def main():
         pr = json.load(f)
     with open(args.base_results) as f:
         base = json.load(f)
-    markdown, failed = compare(base, pr, args.threshold_warn, args.threshold_fail, args.min_absolute)
+    markdown, failed = compare(base, pr, args.threshold_warn, args.threshold_fail, args.min_absolute, args.title)
     print(markdown)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as f:
             f.write(markdown + "\n")
-    return 1 if failed else 0
+    return 1 if failed and not args.no_gate else 0
 
 
 if __name__ == "__main__":

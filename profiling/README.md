@@ -18,6 +18,10 @@ python .github/workflows/scripts/count_instructions.py measure . --output ic/pr/
 python .github/workflows/scripts/count_instructions.py compare ic/pr/results.json ic/base/results.json
 ```
 
+On pushes to master the job also measures the latest release tag and reports the
+drift since then, without gating, since many small changes that each pass the gate
+can still add up.
+
 Callgrind sees the interpreter's C frames, not Python functions, so once a row
 moves, use `profile-cpu` below on both trees to find where.
 
