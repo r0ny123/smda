@@ -52,6 +52,43 @@ class ReadTotalTest(unittest.TestCase):
             count_instructions.read_total(path)
 
 
+class MeasureTest(unittest.TestCase):
+    def test_failure_of_a_known_fixture_is_fatal(self):
+        with (
+            tempfile.TemporaryDirectory() as output,
+            mock.patch.object(count_instructions.subprocess, "check_output", return_value='["asprox"]'),
+            mock.patch.object(count_instructions.subprocess, "Popen") as popen,
+            mock.patch.object(count_instructions, "_callgrind", side_effect=[1000, RuntimeError("fixture crashed")]),
+        ):
+            popen.return_value.wait.return_value = 0
+            with self.assertRaisesRegex(RuntimeError, "fixture crashed"):
+                count_instructions.measure(".", ["asprox"], output, jobs=1)
+
+    def test_fixture_unknown_to_the_tree_is_not_measured(self):
+        with (
+            tempfile.TemporaryDirectory() as output,
+            mock.patch.object(count_instructions.subprocess, "check_output", return_value="[]"),
+            mock.patch.object(count_instructions.subprocess, "Popen") as popen,
+            mock.patch.object(count_instructions, "_callgrind", return_value=1000) as callgrind,
+        ):
+            result = count_instructions.measure(".", ["new_fixture"], output, jobs=1)
+            self.assertIsNone(result["fixtures"]["new_fixture"])
+            popen.assert_not_called()
+            self.assertEqual(callgrind.call_count, 1)
+
+    def test_warmup_failure_is_fatal(self):
+        with (
+            tempfile.TemporaryDirectory() as output,
+            mock.patch.object(count_instructions.subprocess, "check_output", return_value='["asprox"]'),
+            mock.patch.object(count_instructions.subprocess, "Popen") as popen,
+            mock.patch.object(count_instructions, "_callgrind") as callgrind,
+        ):
+            popen.return_value.wait.return_value = 1
+            with self.assertRaisesRegex(RuntimeError, "warm-up.*asprox"):
+                count_instructions.measure(".", ["asprox"], output, jobs=1)
+            callgrind.assert_not_called()
+
+
 class CompareTest(unittest.TestCase):
     def _compare(self, base, pr):
         return count_instructions.compare(base, pr, threshold_warn=0.01, threshold_fail=0.02)
