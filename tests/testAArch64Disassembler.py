@@ -24,11 +24,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import lief
-from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM
 
 from smda.aarch64.AArch64Backend import AArch64Backend, _dataRefImmediatesFromWord
 from smda.aarch64.AArch64CapstoneVerification import is_control_flow_mnemonic
 from smda.aarch64.AArch64InstructionEscaper import AArch64InstructionEscaper
+from smda.aarch64.capstone_compat import OP_IMM as ARM64_OP_IMM
+from smda.aarch64.capstone_compat import OP_MEM as ARM64_OP_MEM
 from smda.aarch64.definitions import (
     EXCEPTION_RETURN_INS,
     adr_pc_value,
@@ -2011,9 +2012,10 @@ class TestAArch64StaticFixture(unittest.TestCase):
 
 class TestAArch64Analyzers(unittest.TestCase):
     def test_aarch64_jump_table_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -2040,7 +2042,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2077,9 +2079,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(targets[:3], [0x411120, 0x411140, 0x4110E0])
 
     def test_aarch64_indirect_call_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64IndirectCallAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -2104,7 +2107,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly.binary_info = binary_info
         disassembly.apis = {}
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2158,11 +2161,12 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(disassembly.import_slots, {0x401010: ("GLIBC_2.2.5", "puts")})
 
     def test_aarch64_indexed_load_reports_no_single_import_slot(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64IndirectCallAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
         # ldr x8, [x9, x10] addresses a table, not one slot, so there is nothing to record
         decoded = [next(capstone.disasm(w.to_bytes(4, "little"), 0x401000 + i * 4)) for i, w in enumerate([0xF86A6928])]
@@ -2171,9 +2175,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertIsNone(analyzer._loadSlotFor(decoded, "x8"))
 
     def test_aarch64_indirect_call_clears_stale_register_after_unknown_mov(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64IndirectCallAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -2199,7 +2204,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly.binary_info = binary_info
         disassembly.apis = {}
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2250,9 +2255,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertTrue(fake_state.leaf)
 
     def test_aarch64_ldrsw_jump_table_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -2280,7 +2286,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2317,7 +2323,9 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(targets[:3], [0x411120, 0x411140, 0x4110E0])
 
     def _buildIndirectCallCrossBlockFixture(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
+
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         # Block B0 (predecessor): resolves x8 -> 0x401020, then unconditionally
@@ -2343,7 +2351,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly.binary_info = binary_info
         disassembly.apis = {}
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         added_candidates = []
@@ -2411,9 +2419,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertTrue(fake_state.leaf)
 
     def test_aarch64_jump_table_resolves_base_from_predecessor_block(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         # Block B0 computes the table base and unconditionally branches into B1;
@@ -2443,7 +2452,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2480,9 +2489,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(targets[:3], [0x411120, 0x411140, 0x4110E0])
 
     def test_aarch64_jump_table_sxtw_extend_chain_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         # A plain (unsigned) ldr of a raw 32-bit table entry, explicitly sign-extended
@@ -2516,7 +2526,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2554,9 +2564,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(targets[:3], [0x411120, 0x411140, 0x4110E0])
 
     def test_aarch64_jump_table_ubfx_uxtw_extend_chain_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         # Plain 32-bit table load zero-extended via Capstone's UXTW alias form
@@ -2589,7 +2600,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2627,9 +2638,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertEqual(targets[:3], [0x411120, 0x411140, 0x411160])
 
     def test_aarch64_movz_movk_indirect_call_resolution(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64IndirectCallAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         # Materialize absolute address 0x401020 via movz+movk (LSL #16) then blr.
@@ -2654,7 +2666,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly.binary_info = binary_info
         disassembly.apis = {}
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         added = []
@@ -2797,9 +2809,10 @@ class TestAArch64Analyzers(unittest.TestCase):
         self.assertTrue(any(f.confidence == 1.0 for f in filtered.getFunctions()))
 
     def test_aarch64_jump_table_size_inferred_from_subs_bounds_check(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -2831,7 +2844,7 @@ class TestAArch64Analyzers(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -2883,11 +2896,12 @@ class TestAArch64MovMacroSplit(unittest.TestCase):
     """
 
     def _split(self, offset, instruction_bytes):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
         from smda.export.Exporter import Exporter
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         errors = {}
         return (
             Exporter._splitInstructionBytes(capstone, offset, instruction_bytes, "aarch64", errors),

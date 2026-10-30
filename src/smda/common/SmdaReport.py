@@ -12,7 +12,6 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from capstone import (
     CS_ARCH_ARM,
-    CS_ARCH_ARM64,
     CS_ARCH_X86,
     CS_MODE_32,
     CS_MODE_64,
@@ -22,6 +21,7 @@ from capstone import (
     Cs,
 )
 
+from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 from smda.common.BlockLocator import BlockLocator
 from smda.common.ExceptionHandling import reraise_non_operational_exception
 from smda.DisassemblyStatistics import DisassemblyStatistics
@@ -302,7 +302,7 @@ class SmdaReport:
                     f"getCapstone() is only available for Intel, AArch64 and ARM, not '{self.architecture}'"
                 )
             if self.architecture == "aarch64":
-                self.capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+                self.capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
             else:
                 self.capstone = Cs(CS_ARCH_X86, CS_MODE_64) if self.bitness == 64 else Cs(CS_ARCH_X86, CS_MODE_32)
             self.capstone.detail = True

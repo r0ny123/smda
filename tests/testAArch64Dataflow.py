@@ -1,8 +1,9 @@
 import unittest
 
-from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
 from smda.aarch64.AArch64Backend import _hasDataRefImmediate
+from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 from smda.aarch64.dataflow import propagateConstants
 
 
@@ -37,7 +38,7 @@ class AArch64DataflowTestSuite(unittest.TestCase):
     redefine a previously-tracked register."""
 
     def setUp(self):
-        self.cs = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        self.cs = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         self.cs.detail = True
 
     def test_add_immediate_applies_lsl_shift(self):

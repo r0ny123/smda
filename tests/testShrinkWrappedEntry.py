@@ -10,8 +10,9 @@ from struct import pack
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from capstone import CS_ARCH_ARM64, CS_MODE_ARM, Cs
+from capstone import CS_MODE_ARM, Cs
 
+from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 from smda.aarch64.definitions import direct_branch_target, flows_into, is_frame_setup
 from smda.aarch64.FunctionCandidateManager import FunctionCandidateManager
 from smda.common.BinaryInfo import BinaryInfo
@@ -68,7 +69,7 @@ class WordEncodingTest(unittest.TestCase):
     """The words the tests below are built from, checked against capstone."""
 
     def testEveryWordDecodesAsItsComment(self):
-        md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+        md = Cs(CS_ARCH_AARCH64, CS_MODE_ARM)
         expected = {
             MOV_W0_7: "mov w0, #7",
             LDR_X3_X2: "ldr x3, [x2]",

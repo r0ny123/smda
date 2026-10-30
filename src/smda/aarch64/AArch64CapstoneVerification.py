@@ -10,19 +10,7 @@ from __future__ import annotations
 
 import re
 
-import capstone.arm64_const as arm64_const
-from capstone.arm64 import (
-    ARM64_OP_BARRIER,
-    ARM64_OP_FP,
-    ARM64_OP_IMM,
-    ARM64_OP_MEM,
-    ARM64_OP_PREFETCH,
-    ARM64_OP_REG,
-    ARM64_OP_REG_MRS,
-    ARM64_OP_REG_MSR,
-    ARM64_OP_SYS,
-)
-
+from smda.aarch64 import capstone_compat as cs
 from smda.aarch64.definitions import (
     ALWAYS_BRANCH_INS,
     CALL_INS,
@@ -86,11 +74,6 @@ _SCALAR_LONG_MULTIPLY_MNEMONICS = frozenset(
         "umulh",
     }
 )
-_ARM64_OP_PSTATE = getattr(arm64_const, "ARM64_OP_PSTATE", -1)
-_ARM64_OP_SVCR = getattr(arm64_const, "ARM64_OP_SVCR", -1)
-_ARM64_OP_CIMM = getattr(arm64_const, "ARM64_OP_CIMM", -1)
-_ARM64_OP_SME_INDEX = getattr(arm64_const, "ARM64_OP_SME_INDEX", -1)
-_ARM64_CC_INVALID = getattr(arm64_const, "ARM64_CC_INVALID", 0)
 _TRAP_MNEMONICS = frozenset(END_INS)
 _CONTROL_FLOW_MNEMONICS = frozenset(
     RET_INS
@@ -123,24 +106,22 @@ def smda_instruction_matches_capstone(smda_instruction, capstone_instruction) ->
 
 def escape_capstone_operand(operand) -> str:
     operand_type = operand.type
-    if operand_type == ARM64_OP_REG:
+    if operand_type == cs.OP_REG:
         return "REG"
-    if operand_type in (ARM64_OP_IMM, ARM64_OP_FP):
+    if operand_type in (cs.OP_IMM, cs.OP_FP):
         return "CONST"
-    if operand_type == ARM64_OP_MEM:
+    if operand_type in cs.OP_MEM_CLASSES:
         return "PTR"
-    if operand_type in (ARM64_OP_REG_MRS, ARM64_OP_REG_MSR, _ARM64_OP_PSTATE, _ARM64_OP_SVCR):
+    if operand_type in (cs.OP_REG_MRS, cs.OP_REG_MSR, cs.OP_SVCR) or operand_type in cs.OP_PSTATE_CLASSES:
         return "SYSREG"
-    if operand_type == ARM64_OP_SYS:
+    if operand_type in cs.OP_SYS_CLASSES:
         return "SYSOP"
-    if operand_type == ARM64_OP_PREFETCH:
+    if operand_type in cs.OP_PREFETCH_CLASSES:
         return "HINT"
-    if operand_type == ARM64_OP_BARRIER:
+    if operand_type in cs.OP_BARRIER_CLASSES:
         return "BARRIER"
-    if operand_type == _ARM64_OP_CIMM:
+    if operand_type == cs.OP_CIMM:
         return "COND"
-    if operand_type == _ARM64_OP_SME_INDEX:
-        return "MISC"
     return "MISC"
 
 
@@ -148,7 +129,7 @@ def expected_operand_tokens(capstone_instruction) -> list[str]:
     tokens = [escape_capstone_operand(operand) for operand in capstone_instruction.operands]
     if capstone_instruction.mnemonic in _CC_MNEMONICS and capstone_instruction.cc not in (
         0,
-        _ARM64_CC_INVALID,
+        cs.CC_INVALID,
     ):
         tokens.append("COND")
     return tokens

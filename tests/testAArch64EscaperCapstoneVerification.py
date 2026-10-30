@@ -26,6 +26,7 @@ from smda.aarch64.AArch64CapstoneVerification import (
     smda_instruction_matches_capstone,
 )
 from smda.aarch64.AArch64InstructionEscaper import AArch64InstructionEscaper as Escaper
+from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 from smda.Disassembler import Disassembler
 from smda.SmdaConfig import SmdaConfig
 
@@ -237,7 +238,7 @@ class TableClassifierGapTestSuite(unittest.TestCase):
     def test_the_table_classifier_agrees_with_capstone(self):
         import capstone
 
-        engine = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        engine = capstone.Cs(CS_ARCH_AARCH64, capstone.CS_MODE_ARM)
         engine.detail = True
         for label, code in self.ENCODINGS.items():
             for instruction in engine.disasm(code, 0x1000):
@@ -250,7 +251,7 @@ class TableClassifierGapTestSuite(unittest.TestCase):
     def test_a_conditional_alias_escapes_its_condition_operand(self):
         import capstone
 
-        engine = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+        engine = capstone.Cs(CS_ARCH_AARCH64, capstone.CS_MODE_ARM)
         engine.detail = True
         for instruction in engine.disasm(b"\x20\xa0\x81\xda", 0x1000):
             self.assertEqual(expected_escaped_operands(instruction), "REG, REG, COND")

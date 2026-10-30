@@ -8,9 +8,10 @@ from smda.DisassemblyResult import DisassemblyResult
 
 class TestAArch64JumpTableLsl(unittest.TestCase):
     def test_shifted_add_scales_entry(self):
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -38,7 +39,7 @@ class TestAArch64JumpTableLsl(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -78,9 +79,10 @@ class TestAArch64JumpTableLsl(unittest.TestCase):
         # `add Xd, Xindex, Xanchor` puts the constant in the second operand, so the
         # anchor is captured by the elif arm. Targets must still be rebased on the
         # anchor rather than on the table address the later ldr records.
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -108,7 +110,7 @@ class TestAArch64JumpTableLsl(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:
@@ -146,9 +148,10 @@ class TestAArch64JumpTableLsl(unittest.TestCase):
         # so the table is signed with no ldrsw/sxtw anywhere for the reverse scan to see.
         # Read as unsigned, every backward entry becomes a multi-gigabyte delta and the walk
         # aborts on the first one, losing the whole table.
-        from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+        from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
         from smda.aarch64.analyzers import AArch64JumpTableAnalyzer
+        from smda.aarch64.capstone_compat import CS_ARCH_AARCH64
 
         base = 0x400000
         words = [
@@ -175,7 +178,7 @@ class TestAArch64JumpTableLsl(unittest.TestCase):
         disassembly = DisassemblyResult()
         disassembly.binary_info = binary_info
 
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
 
         class FakeDisassembler:

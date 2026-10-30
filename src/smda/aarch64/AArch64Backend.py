@@ -3,12 +3,12 @@
 import logging
 import re
 
-from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
-from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM
+from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
 from smda.common.arch.ArchBackend import ArchBackend
 
 from .analyzers import AArch64IndirectCallAnalyzer, AArch64JumpTableAnalyzer, AArch64TfIdf
+from .capstone_compat import CS_ARCH_AARCH64, OP_IMM, OP_MEM_CLASSES
 from .definitions import (
     ADD_IMM64_MASK,
     ADD_IMM64_VALUE,
@@ -137,7 +137,7 @@ class AArch64Backend(ArchBackend):
     # --- collaborator factories ------------------------------------------
     def createCapstone(self, bitness):
         del bitness  # AArch64 is always 64-bit; 32-bit ARM would be a separate backend
-        capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+        capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         capstone.detail = True
         return capstone
 
@@ -361,9 +361,9 @@ class AArch64Backend(ArchBackend):
                 return
             for operand in detailed.operands:
                 value = None
-                if operand.type == ARM64_OP_IMM:
+                if operand.type == OP_IMM:
                     value = operand.imm
-                elif operand.type == ARM64_OP_MEM and operand.mem.base == 0:
+                elif operand.type in OP_MEM_CLASSES and operand.mem.base == 0:
                     value = operand.mem.disp
                 if value is None or value in emitted:
                     continue

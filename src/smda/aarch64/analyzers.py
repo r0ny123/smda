@@ -12,14 +12,7 @@ from bisect import bisect_right
 from collections import Counter
 from copy import deepcopy
 
-from capstone.arm64_const import (
-    ARM64_EXT_SXTB,
-    ARM64_EXT_SXTH,
-    ARM64_EXT_SXTW,
-    ARM64_EXT_SXTX,
-    ARM64_SFT_LSL,
-)
-
+from .capstone_compat import EXT_SXTB, EXT_SXTH, EXT_SXTW, EXT_SXTX, OP_IMM, OP_MEM_CLASSES, OP_REG, SFT_LSL
 from .dataflow import (
     _applyConstantWrite,
     gatherContextInstructions,
@@ -45,7 +38,7 @@ def _first_greater(sorted_addrs, after_addr):
 # just burn time chasing edges that don't exist yet.
 JUMPTABLE_PREDECESSOR_DEPTH = 2
 
-SIGNED_EXTENDS = frozenset((ARM64_EXT_SXTB, ARM64_EXT_SXTH, ARM64_EXT_SXTW, ARM64_EXT_SXTX))
+SIGNED_EXTENDS = frozenset((EXT_SXTB, EXT_SXTH, EXT_SXTW, EXT_SXTX))
 
 
 def _updateConstantTracking(d, cap_ins, constants):
@@ -80,7 +73,7 @@ def _mutatesStackPointer(cap_ins):
     """Whether this instruction changes sp's value: explicit dest-is-sp arithmetic
     (sub/add/mov) or an sp-based pre/post-index writeback. Any earlier tracked
     stack-relative offsets become meaningless once sp moves."""
-    if cap_ins.operands and cap_ins.operands[0].type == 1 and cap_ins.reg_name(cap_ins.operands[0].reg) == "sp":
+    if cap_ins.operands and cap_ins.operands[0].type == OP_REG and cap_ins.reg_name(cap_ins.operands[0].reg) == "sp":
         return True
     return _isSpWriteback(cap_ins.op_str)
 
@@ -101,7 +94,7 @@ def _recordStackStore(cap_ins, mnemonic, constants, stack_bytes):
     operands = cap_ins.operands
     if mnemonic in _SINGLE_STORE_MNEMONICS and len(operands) == 2:
         src_op, mem_op = operands
-        if src_op.type != 1 or mem_op.type != 3:  # REG, MEM
+        if src_op.type != OP_REG or mem_op.type not in OP_MEM_CLASSES:
             return
         if not mem_op.mem.base or cap_ins.reg_name(mem_op.mem.base) != "sp" or mem_op.mem.index != 0:
             return
@@ -115,7 +108,7 @@ def _recordStackStore(cap_ins, mnemonic, constants, stack_bytes):
             stack_bytes[offset + b] = ((value >> (8 * b)) & 0xFF, cap_ins.address)
     elif mnemonic == "stp" and len(operands) == 3:
         reg1_op, reg2_op, mem_op = operands
-        if reg1_op.type != 1 or reg2_op.type != 1 or mem_op.type != 3:
+        if reg1_op.type != OP_REG or reg2_op.type != OP_REG or mem_op.type not in OP_MEM_CLASSES:
             return
         if not mem_op.mem.base or cap_ins.reg_name(mem_op.mem.base) != "sp" or mem_op.mem.index != 0:
             return
@@ -427,10 +420,10 @@ class AArch64IndirectCallAnalyzer:
         history = propagateConstantsHistory(cap_insns, self.disassembler)
         for cap_ins, constants_before in zip(reversed(cap_insns), reversed(history), strict=True):
             operands = cap_ins.operands
-            if not operands or operands[0].type != 1 or norm_reg(cap_ins.reg_name(operands[0].reg)) != reg_name:
+            if not operands or operands[0].type != OP_REG or norm_reg(cap_ins.reg_name(operands[0].reg)) != reg_name:
                 continue
             # the last write to the register decides; anything but a plain load has no slot
-            if cap_ins.mnemonic not in ("ldr", "ldur") or len(operands) < 2 or operands[1].type != 3:
+            if cap_ins.mnemonic not in ("ldr", "ldur") or len(operands) < 2 or operands[1].type not in OP_MEM_CLASSES:
                 return None
             memory = operands[1].mem
             if memory.index:
@@ -506,7 +499,7 @@ class AArch64IndirectCallAnalyzer:
             if not cap_ins or not cap_ins.operands:
                 continue
             target_op = cap_ins.operands[0]
-            if target_op.type != 1:  # REG
+            if target_op.type != OP_REG:
                 continue
             reg_name = cap_ins.reg_name(target_op.reg)
 
@@ -566,7 +559,7 @@ class AArch64JumpTableAnalyzer:
             return []
 
         target_op = detailed_jump.operands[0]
-        if target_op.type != 1:  # REG
+        if target_op.type != OP_REG:
             return []
 
         target_reg = norm_reg(detailed_jump.reg_name(target_op.reg))
@@ -601,7 +594,7 @@ class AArch64JumpTableAnalyzer:
             if not ins.operands:
                 continue
             dest_op = ins.operands[0]
-            if dest_op.type != 1:  # REG
+            if dest_op.type != OP_REG:
                 continue
             dest_reg = norm_reg(ins.reg_name(dest_op.reg))
             if dest_reg not in tracked_regs:
@@ -611,7 +604,7 @@ class AArch64JumpTableAnalyzer:
             if mnemonic == "add" and len(ins.operands) >= 3:
                 op1 = ins.operands[1]
                 op2 = ins.operands[2]
-                if op1.type == 1 and op2.type == 1:  # REG + REG (incl. extended/shifted reg)
+                if op1.type == OP_REG and op2.type == OP_REG:  # REG + REG (incl. extended/shifted reg)
                     reg1 = norm_reg(ins.reg_name(op1.reg))
                     reg2 = norm_reg(ins.reg_name(op2.reg))
                     tracked_regs.add(reg1)
@@ -629,19 +622,19 @@ class AArch64JumpTableAnalyzer:
                         is_relative = True
                         index_op = op1
                     if index_op is not None:
-                        if index_op.shift.type == ARM64_SFT_LSL:
+                        if index_op.shift.type == SFT_LSL:
                             entry_shift = index_op.shift.value
                         # `add Xd, Xbase, Wi, sxtw #2` folds the index's sign-extension into
                         # the merging add, so a signed table can reach this point without any
                         # ldrsw/sxtw of its own to mark it.
                         if index_op.ext in SIGNED_EXTENDS:
                             is_signed = True
-                elif op1.type == 1 and op2.type == 2:  # REG + IMM
+                elif op1.type == OP_REG and op2.type == OP_IMM:  # REG + IMM
                     reg1 = norm_reg(ins.reg_name(op1.reg))
                     tracked_regs.add(reg1)
             elif mnemonic in ("ldr", "ldrsw", "ldrh", "ldrb", "ldrsh", "ldrsb") and len(ins.operands) >= 2:
                 op1 = ins.operands[1]
-                if op1.type == 3:  # MEM
+                if op1.type in OP_MEM_CLASSES:
                     base_reg = norm_reg(ins.reg_name(op1.mem.base))
                     if base_reg in constants:
                         table_base = constants[base_reg]
@@ -664,7 +657,7 @@ class AArch64JumpTableAnalyzer:
                         is_relative = True
             elif mnemonic in ("mov", "movz", "movk", "movn") and len(ins.operands) >= 2:
                 op1 = ins.operands[1]
-                if op1.type == 1:  # REG
+                if op1.type == OP_REG:
                     tracked_regs.add(norm_reg(ins.reg_name(op1.reg)))
             elif (
                 mnemonic in ("sxtb", "sxth", "sxtw", "sxtx", "uxtb", "uxth", "uxtw", "uxtx") and len(ins.operands) >= 2
@@ -674,7 +667,7 @@ class AArch64JumpTableAnalyzer:
                 # `ldrsw` directly) - continue the chase into the source register and
                 # record the entry's signedness.
                 op1 = ins.operands[1]
-                if op1.type == 1:  # REG
+                if op1.type == OP_REG:
                     tracked_regs.add(norm_reg(ins.reg_name(op1.reg)))
                     is_signed = mnemonic.startswith("sxt")
             elif mnemonic == "ubfx" and len(ins.operands) >= 4:
@@ -685,9 +678,9 @@ class AArch64JumpTableAnalyzer:
                 # Capstone reports the width operand as #0x20 (32) for the UXTW alias,
                 # not the raw UBFM imms field (31). Accept both encodings.
                 if (
-                    op1.type == 1
-                    and op_immr.type == 2
-                    and op_imms.type == 2
+                    op1.type == OP_REG
+                    and op_immr.type == OP_IMM
+                    and op_imms.type == OP_IMM
                     and op_immr.imm == 0
                     and op_imms.imm in (31, 0x1F, 32, 0x20)
                 ):
@@ -710,7 +703,7 @@ class AArch64JumpTableAnalyzer:
                     cmp_reg_op, cmp_imm_op = ins.operands[0], ins.operands[1]
                 elif mnemonic == "subs" and len(ins.operands) >= 3:
                     cmp_reg_op, cmp_imm_op = ins.operands[1], ins.operands[2]
-                if cmp_reg_op is None or cmp_imm_op is None or cmp_reg_op.type != 1 or cmp_imm_op.type != 2:
+                if cmp_reg_op is None or cmp_imm_op is None or cmp_reg_op.type != OP_REG or cmp_imm_op.type != OP_IMM:
                     continue
                 reg_name = ins.reg_name(cmp_reg_op.reg).lower()
                 if reg_name in index_regs_to_match:

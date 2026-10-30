@@ -32,11 +32,12 @@ import struct
 import sys
 
 import lief
-from capstone import CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN, Cs
+from capstone import CS_MODE_LITTLE_ENDIAN, Cs
 
 from smda.common.FunctionCandidateManager import FunctionCandidateManager as _CommonFunctionCandidateManager
 from smda.utility.MachoBinary import get_macho_stub_ranges
 
+from .capstone_compat import CS_ARCH_AARCH64
 from .definitions import (
     ADD_IMM64_MASK,
     ADD_IMM64_VALUE,
@@ -1000,7 +1001,7 @@ class FunctionCandidateManager(_CommonFunctionCandidateManager):
         above, and an undecodable word among them is what gives them away.
         """
         if self._capstone is None:
-            self._capstone = Cs(CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN)
+            self._capstone = Cs(CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN)
         data = b"".join(word.to_bytes(INSTRUCTION_SIZE, "little") for word in words)
         return sum(1 for _ in self._capstone.disasm_lite(data, addr)) == len(words)
 

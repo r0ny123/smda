@@ -1,9 +1,9 @@
 import logging
 from typing import Any, Iterator, List, Optional
 
-from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM
 
+from smda.aarch64 import capstone_compat as aarch64_cs
 from smda.aarch64.AArch64InstructionEscaper import AArch64InstructionEscaper
 from smda.arm.ArmInstructionEscaper import ArmInstructionEscaper
 from smda.arm.definitions import IT_MNEMONICS
@@ -125,9 +125,9 @@ class SmdaInstruction:
             detailed = self.getDetailed()
             for operand in detailed.operands:
                 value = None
-                if operand.type == ARM64_OP_IMM:
+                if operand.type == aarch64_cs.OP_IMM:
                     value = operand.imm
-                elif operand.type == ARM64_OP_MEM and operand.mem.base == 0:
+                elif operand.type in aarch64_cs.OP_MEM_CLASSES and operand.mem.base == 0:
                     value = operand.mem.disp
                 if (
                     value is not None
