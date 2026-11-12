@@ -80,6 +80,12 @@ past roughly six lines it belongs in the PR the entry links.
   set. Cost: four `udf #0xf9` in the ARMNT DLL that Capstone cannot decode. Big-endian ARM stays unsupported.
 
 ### Changed
+- **(labels)** Bump `demangle` to `==0.7.0`. Swift's called-once conventions print as upstream now spells
+  them (`@once`, `@callable(once)`), `Twa` after a metadata accessor and a propagated `@differentiable` argument are
+  read where they were refused, and an MSVC name nested deep enough to hit Python's recursion limit before
+  `max_depth` reads where it stayed mangled. Swift parses about 1.3 times as fast cold and template-heavy MSVC about
+  1.5 times. *Measured with smda's full suite:* 15,570 distinct `demangle.demangle` calls recorded, 0 outputs
+  changed against 0.6.0. (#193)
 - **(aarch64)** Jump the gap scan over non-executable sections instead of stepping through them a word at a time.
   `nextGapCandidate` now bisects into the sorted, merged executable section ranges and resumes at the next one, as
   the ARM backend already does. *Measured on `04652e6`:* gap scan time on a 50 MB Go ELF (gh 2.62.0 linux/arm64)
